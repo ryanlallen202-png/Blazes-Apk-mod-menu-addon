@@ -98,6 +98,10 @@ static struct {
     BNM::MonoType *tSign = nullptr, *tMapObject = nullptr;
     Method<BNM::Structures::Mono::String *> signGetText, mapGetKey, mapGetColor;
     Field<Il2CppObject *> signText;
+    BNM::MonoType *tItemInfo = nullptr, *tMobInfo = nullptr;
+    Method<BNM::Structures::Mono::String *> itemInfoKey, mobInfoKey;
+    Method<Vector3> mapPosition;
+    Field<float> rollSpeed;
     Ref shader, font, usagePrimary, usageSecondary, usageGrip, usageTrigger;
 } G;
 
@@ -207,6 +211,13 @@ static bool Lookups() {
         }
         G.signGetText = text.GetMethod("get_text", 0);
     }
+    Class itemInfo("", "Item", Image("Assembly-CSharp.dll"));
+    if (itemInfo.IsValid()) { G.tItemInfo = itemInfo.GetMonoType(); G.itemInfoKey = itemInfo.GetMethod("get_itemKey", 0); }
+    Class mobInfo("", "Mob", Image("Assembly-CSharp.dll"));
+    if (mobInfo.IsValid()) { G.tMobInfo = mobInfo.GetMonoType(); G.mobInfoKey = mobInfo.GetMethod("get_mobKey", 0); }
+    Class mapInfo("", "MapObject", Image("Assembly-CSharp.dll"));
+    if (mapInfo.IsValid()) G.mapPosition = mapInfo.GetMethod("get_placedPosition", 0);
+    G.rollSpeed = player.GetField("rollSpeed");
     G.tRigidbody = rb.GetMonoType();
     G.tCollider = Class("UnityEngine", "Collider").GetMonoType();
     G.tRenderer = rend.GetMonoType();
@@ -297,6 +308,11 @@ static void NextIronSpeed();
 static void ApplySpeedBoost();
 static void ApplyLongArms();
 static void ApplyGravity();
+static void LocalHitEffect();
+static void ApplyRoll();
+static bool f_itemInfo, f_mobInfo, f_coordinateGun, f_fastRoll;
+static Vector3 g_savedCoordinate{};
+static bool g_hasSavedCoordinate = false;
 
 enum Cat { MAIN, MOVEMENT, SETTINGS, UTILITY, ENABLED, NCAT };
 static const char *kCatName[NCAT] = {"Main", "Movement Mods", "Settings", "Utility Mods", "Enabled Mods"};
@@ -326,10 +342,15 @@ static Item g_items[] = {
     {MOVEMENT, "Long Arms", TOGGLE, MAIN, &f_longArms, ApplyLongArms},
     {MOVEMENT, "Speed Boost", TOGGLE, MAIN, &f_speedBoost, ApplySpeedBoost},
     {MOVEMENT, "No Gravity", TOGGLE, MAIN, &f_noGravity, ApplyGravity},
+    {MOVEMENT, "Fast Roll Speed", TOGGLE, MAIN, &f_fastRoll, ApplyRoll},
+    {UTILITY, "Local Hit Effect", ACTION, MAIN, nullptr, LocalHitEffect},
 
     {UTILITY, "Exit Utility Mods", OPEN, MAIN},
     {UTILITY, "Get Sign Text Gun", TOGGLE, MAIN, &f_signGun},
     {UTILITY, "Get Map Object Gun", TOGGLE, MAIN, &f_mapGun},
+    {UTILITY, "Get Item Gun", TOGGLE, MAIN, &f_itemInfo},
+    {UTILITY, "Get Mob Data Gun", TOGGLE, MAIN, &f_mobInfo},
+    {UTILITY, "Save Map Coordinate Gun", TOGGLE, MAIN, &f_coordinateGun},
 
     {SETTINGS, "Exit Settings", OPEN, MAIN},
     {SETTINGS, "Change Pointer Position", ACTION, MAIN, nullptr, NextPointer},
@@ -792,6 +813,35 @@ static void FlyTick(const Buttons &in, float dt) {
     StopMoving();
 }
 
+// Bounded local-only alternative to the original effect-spam button.
+// One reusable sphere, one press per second, no messages sent to the room.
+static Ref g_localEffect;
+static double g_effectUntil = 0, g_nextEffect = 0;
+static void LocalHitEffect() {
+    if (g_time < g_nextEffect || !g_rightHand.get()) return;
+    g_nextEffect = g_time + 1.0;
+    if (!g_localEffect.get()) g_localEffect.set(Prim(0, T().buttonOn, false));
+    auto *go = g_localEffect.get();
+    if (!go) return;
+    G.trSetPosition[Tr(go)](G.trGetPosition[g_rightHand.get()]());
+    G.trSetLocalScale[Tr(go)](Vector3(0.15f, 0.15f, 0.15f));
+    Show(g_localEffect, true);
+    g_effectUntil = g_time + 0.3;
+}
+static Il2CppObject *g_rollPlayer = nullptr;
+static float g_oldRoll = 0;
+static void ApplyRoll() {
+    auto *player = g_player.get();
+    if (!player || !G.rollSpeed.IsValid()) return;
+    if (f_fastRoll && g_rollPlayer != player) {
+        g_oldRoll = G.rollSpeed[player]();
+        G.rollSpeed[player] = 900.0f;
+        g_rollPlayer = player;
+    } else if (!f_fastRoll && g_rollPlayer) {
+        if (g_rollPlayer == player) G.rollSpeed[player] = g_oldRoll;
+        g_rollPlayer = nullptr;
+    }
+}
 static void VelocityFlyTick(const Buttons &in) {
     Il2CppObject *hand = g_rightHand.get();
     if (!f_velocityFly || !in.a || !hand) return;
@@ -979,7 +1029,7 @@ static void ReadMapObject(Il2CppObject *collider) {
 static Ref g_gunLine, g_gunLineGo, g_gunBall;
 static bool g_gunTrigger = false;
 static void TeleportGunTick(const Buttons &in) {
-    bool aiming = (f_tpGun || f_signGun || f_mapGun) && in.rgrip;
+    bool aiming = (f_tpGun || f_signGun || f_mapGun || f_itemInfo || f_mobInfo || f_coordinateGun) && in.rgrip;
     if (!aiming) {
         Show(g_gunLineGo, false);
         Show(g_gunBall, false);
@@ -1019,7 +1069,23 @@ static void TeleportGunTick(const Buttons &in) {
     if (in.rtrig && !g_gunTrigger && found) {
         if (f_tpGun) TeleportPlayer(end + Vector3(0, 1.0f, 0));
         else if (f_signGun) ReadSign((Il2CppObject *)hit.GetCollider());
-        else ReadMapObject((Il2CppObject *)hit.GetCollider());
+        else if (f_mapGun) ReadMapObject((Il2CppObject *)hit.GetCollider());
+        else {
+            auto *collider = (Il2CppObject *)hit.GetCollider();
+            if (f_itemInfo || f_mobInfo) {
+                auto *obj = ParentComp(collider, f_itemInfo ? G.tItemInfo : G.tMobInfo);
+                auto method = f_itemInfo ? G.itemInfoKey : G.mobInfoKey;
+                auto *key = obj && method.IsValid() ? method[obj]() : nullptr;
+                Notify("%s", key ? key->str().c_str() : "No readable item/mob there");
+            } else {
+                auto *obj = ParentComp(collider, G.tMapObject);
+                if (obj && G.mapPosition.IsValid()) {
+                    g_savedCoordinate = G.mapPosition[obj]();
+                    g_hasSavedCoordinate = true;
+                    Notify("Saved: %.2f, %.2f, %.2f", g_savedCoordinate.x, g_savedCoordinate.y, g_savedCoordinate.z);
+                } else Notify("No map coordinates there");
+            }
+        }
     }
     g_gunTrigger = in.rtrig;
 }
@@ -1027,6 +1093,9 @@ static void TeleportGunTick(const Buttons &in) {
 // ---- callbacks ---------------------------------------------------------------
 
 static void OnRoomChange() {
+    Kill(g_localEffect);
+    g_rollPlayer = nullptr;
+    g_hasSavedCoordinate = false;
     // The old room's objects are gone (or about to be): forget them, build again.
     for (int r = 0; r < kRows; r++) { g_rowCube[r].clear(); g_rowLabel[r].clear(); g_rowText[r].clear(); }
     for (Ref *r : {&g_board, &g_bg, &g_outline, &g_title, &g_titleBar, &g_prev, &g_next, &g_notifyText, &g_tipText}) r->clear();
@@ -1076,6 +1145,8 @@ static void OnUpdate(float dt) {
     FlyTick(in, dt);
     PlatformFor(in.lgrip, g_leftPlatform, g_leftHand);
     PlatformFor(in.rgrip, g_rightPlatform, g_rightHand);
+    ApplyRoll();
+    if (g_time >= g_effectUntil) Show(g_localEffect, false);
     VelocityFlyTick(in);
     IronManTick(in, dt);
     ApplySpeedBoost();
