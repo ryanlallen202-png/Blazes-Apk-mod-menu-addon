@@ -326,11 +326,13 @@ static std::vector<PendingItem> g_itemQueue;
 static double g_nextItem = 0, g_nextBatch = 0;
 static int g_dupeArmed = 0;
 
-static constexpr int kDances = 8;
+static constexpr int kDances = 16;
 static bool g_danceSel[kDances];
 static int g_dance = -1;            // the picked dance, -1 = none
 static bool f_fly, f_fastFly, f_platforms, f_lowGravity, f_rainbow, f_fps, f_clock, f_rightHand,
             f_notify = true;
+static bool f_superSpeed, f_superFly, f_rocketBoots, f_dash, f_grapple, f_groundPound;
+static bool f_rain, f_snow;
 static Ref g_player, g_rigidbody, g_leftHand, g_rightHand, g_head;
 static Vector3 g_spot;
 static bool g_haveSpot = false;
@@ -351,8 +353,8 @@ static void ArmDupe9();
 static void ArmDupe27();
 static bool LeftHandItem();
 
-enum Cat { MAIN, MOVEMENT, RIG, ITEMS, SETTINGS, ENABLED, NCAT };
-static const char *kCatName[NCAT] = {"Main", "Movement Mods", "Rig Mods", "Items", "Settings", "Enabled Mods"};
+enum Cat { MAIN, MOVEMENT, RIG, ITEMS, SETTINGS, EFFECTS, ENABLED, NCAT };
+static const char *kCatName[NCAT] = {"Main", "Movement Mods", "Rig Mods", "Items", "Settings", "Effects", "Enabled Mods"};
 enum Kind { OPEN, TOGGLE, ACTION };
 struct Item {
     Cat cat;
@@ -368,6 +370,7 @@ static Item g_items[] = {
     {MAIN, "Movement Mods", OPEN, MOVEMENT},
     {MAIN, "Rig Mods", OPEN, RIG},
     {MAIN, "Items", OPEN, ITEMS},
+    {MAIN, "Effects", OPEN, EFFECTS},
     {MAIN, "Enabled Mods", OPEN, ENABLED},
 
     {MOVEMENT, "Exit Movement Mods", OPEN, MAIN},
@@ -384,7 +387,12 @@ static Item g_items[] = {
     {MOVEMENT, "Low Gravity", TOGGLE, MAIN, &f_lowGravity},
     {MOVEMENT, "Save Spot", ACTION, MAIN, nullptr, SaveSpot},
     {MOVEMENT, "Go To Spot", ACTION, MAIN, nullptr, GoToSpot},
-
+    {MOVEMENT, "Super Speed", TOGGLE, MAIN, &f_superSpeed},
+    {MOVEMENT, "Super Fly", TOGGLE, MAIN, &f_superFly},
+    {MOVEMENT, "Rocket Boots", TOGGLE, MAIN, &f_rocketBoots},
+    {MOVEMENT, "Dash", TOGGLE, MAIN, &f_dash},
+    {MOVEMENT, "Grapple Hook", TOGGLE, MAIN, &f_grapple},
+    {MOVEMENT, "Ground Pound", TOGGLE, MAIN, &f_groundPound},
 
     {RIG, "Exit Rig Mods", OPEN, MAIN},
     {RIG, "Wave", TOGGLE, MAIN, &g_danceSel[0], DancePicked},
@@ -395,6 +403,14 @@ static Item g_items[] = {
     {RIG, "Jumping Jacks", TOGGLE, MAIN, &g_danceSel[5], DancePicked},
     {RIG, "Spaz", TOGGLE, MAIN, &g_danceSel[6], DancePicked},
     {RIG, "Beyblade", TOGGLE, MAIN, &g_danceSel[7], DancePicked},
+    {RIG, "Floss", TOGGLE, MAIN, &g_danceSel[8], DancePicked},
+    {RIG, "Dab", TOGGLE, MAIN, &g_danceSel[9], DancePicked},
+    {RIG, "Clap", TOGGLE, MAIN, &g_danceSel[10], DancePicked},
+    {RIG, "Chicken Wings", TOGGLE, MAIN, &g_danceSel[11], DancePicked},
+    {RIG, "Robot", TOGGLE, MAIN, &g_danceSel[12], DancePicked},
+    {RIG, "Salute", TOGGLE, MAIN, &g_danceSel[13], DancePicked},
+    {RIG, "Cheer", TOGGLE, MAIN, &g_danceSel[14], DancePicked},
+    {RIG, "Hype", TOGGLE, MAIN, &g_danceSel[15], DancePicked},
 
     {ITEMS, "Exit Items", OPEN, MAIN},
     {ITEMS, "Spawn Item Gun", TOGGLE, MAIN, &f_itemGun},
@@ -413,6 +429,10 @@ static Item g_items[] = {
     {SETTINGS, "Show Clock", TOGGLE, MAIN, &f_clock},
     {SETTINGS, "Notifications", TOGGLE, MAIN, &f_notify},
     {SETTINGS, "Turn Everything Off", ACTION, MAIN, nullptr, AllOff},
+
+    {EFFECTS, "Exit Effects", OPEN, MAIN},
+    {EFFECTS, "Rain", TOGGLE, MAIN, &f_rain},
+    {EFFECTS, "Snow", TOGGLE, MAIN, &f_snow},
 };
 static constexpr int kItems = sizeof(g_items) / sizeof(g_items[0]);
 static Item g_returnItem = {ENABLED, "Exit Enabled Mods", OPEN, MAIN};
@@ -436,7 +456,23 @@ static const struct { const char *label, *tip; } kTips[] = {
     {"Low Gravity", "Jump higher, fall slower."},
     {"Save Spot", "Remembers where you are."},
     {"Go To Spot", "Teleports you to your saved spot."},
-    {"Change Menu Theme", "Blaze, Orange, Blue, Green, Purple, Dark."},
+    {"Super Speed", "Hold A to move quickly in the direction you face."},
+    {"Super Fly", "Hold A to fly freely in the direction you look."},
+    {"Rocket Boots", "Hold both triggers to thrust upward."},
+    {"Dash", "Press X for a short forward burst."},
+    {"Grapple Hook", "Hold left grip and right trigger to pull toward a surface."},
+    {"Ground Pound", "Press B to drop quickly."},
+    {"Floss", "Hold left trigger to floss."},
+    {"Dab", "Hold left trigger to dab."},
+    {"Clap", "Hold left trigger to clap."},
+    {"Chicken Wings", "Hold left trigger to flap your arms."},
+    {"Robot", "Hold left trigger for robotic arm movements."},
+    {"Salute", "Hold left trigger to salute."},
+    {"Cheer", "Hold left trigger to cheer."},
+    {"Hype", "Hold left trigger for a hype dance."},
+    {"Rain", "Local rain effect; only you see it."},
+    {"Snow", "Local snow effect; only you see it."},
+    {"Change Menu Theme", "VOID, NEBULA or ECLIPSE."},
     {"Rainbow Menu", "The menu cycles through colors."},
     {"Show FPS", "Frames per second in the title."},
     {"Show Clock", "The time in the title."},
@@ -1213,10 +1249,18 @@ static void DanceTick(const Buttons &in, float dt) {
         R = shoulder + f * 0.35f + r * 0.2f + Vector3(Rand01() - 0.5f, Rand01() - 0.5f, Rand01() - 0.5f) * 0.3f;
         L = shoulder + f * 0.35f - r * 0.2f + Vector3(Rand01() - 0.5f, Rand01() - 0.5f, Rand01() - 0.5f) * 0.3f;
         break;
-    default:  // Beyblade: hands spin fast around your waist
+    case 7:  // Beyblade: hands spin fast around your waist
         R = shoulder - up * 0.3f + r * (0.5f * cosf(t * 20)) + f * (0.5f * sinf(t * 20));
         L = shoulder - up * 0.3f - r * (0.5f * cosf(t * 20)) - f * (0.5f * sinf(t * 20));
         break;
+    case 8: { float p = t * 8.0f; R = shoulder + r * (0.25f + 0.35f * sinf(p)) - up * 0.2f - f * 0.15f; L = shoulder - r * (0.25f + 0.35f * sinf(p + 3.14159f)) - up * 0.2f - f * 0.15f; break; }
+    case 9: R = shoulder + r * 0.48f + up * 0.48f + f * 0.1f; L = shoulder - r * 0.2f + up * 0.18f + f * 0.42f; break;
+    case 10: { float p = 0.16f + 0.12f * fabsf(sinf(t * 7.0f)); R = shoulder + f * 0.38f - r * p + up * 0.05f; L = shoulder + f * 0.38f + r * p + up * 0.05f; break; }
+    case 11: { float p = 0.22f + 0.12f * sinf(t * 9.0f); R = shoulder + r * 0.34f - up * p + f * 0.1f; L = shoulder - r * 0.34f - up * p + f * 0.1f; break; }
+    case 12: { float p = sinf(t * 3.0f) > 0 ? 0.42f : -0.12f; R = shoulder + r * 0.42f + up * p + f * 0.12f; L = shoulder - r * 0.42f - up * p + f * 0.12f; break; }
+    case 13: R = shoulder + r * 0.1f + up * 0.42f + f * 0.32f; L = shoulder - r * 0.42f - up * 0.12f; break;
+    case 14: { float p = 0.42f + 0.08f * sinf(t * 8.0f); R = shoulder + r * 0.38f + up * p; L = shoulder - r * 0.38f + up * p; break; }
+    default: { float p = sinf(t * 8.0f); R = shoulder + r * 0.28f + up * (0.42f + 0.16f * p); L = shoulder - r * 0.28f + up * (0.42f - 0.16f * p); break; }
     }
     // Keep each hand within arm's reach of its shoulder, then glide there instead of
     // jumping, so the arms move smoothly for you and for everyone watching.
@@ -1388,6 +1432,32 @@ static void SpawnOnHandTick(const Buttons &in) {
     g_itemQueue.push_back({G.trGetPosition[hand]() + G.trGetForward[hand]() * 0.1f, Vector3(0, 0, 0)});
 }
 
+// ---- local weather ------------------------------------------------------------
+// Bounded local-only particles: no RPCs and no per-frame object allocation.
+static Ref g_weather[20];
+static int g_weatherMode = 0;
+static void WeatherTick(float dt) {
+    int mode = f_rain ? 1 : (f_snow ? 2 : 0);
+    if (mode != g_weatherMode) { for (auto &p : g_weather) Kill(p); g_weatherMode = mode; }
+    if (!mode) return;
+    Il2CppObject *head = g_head.get(); if (!head) return;
+    Vector3 hp = G.trGetPosition[head]();
+    Color color = mode == 1 ? Color(0.38f, 0.72f, 1.0f, 1) : Color(0.88f, 0.94f, 1.0f, 1);
+    for (int i = 0; i < 20; i++) {
+        if (!Alive(g_weather[i].get())) {
+            Il2CppObject *p = Prim(mode == 1 ? 3 : 0, color, false); if (!p) continue;
+            G.trSetLocalScale[Tr(p)](mode == 1 ? Vector3(0.012f, 0.18f, 0.012f) : Vector3(0.045f, 0.045f, 0.045f));
+            g_weather[i].set(p);
+            G.trSetPosition[Tr(p)](hp + Vector3((Rand01() - 0.5f) * 5.0f, 1.0f + Rand01() * 3.0f, (Rand01() - 0.5f) * 5.0f));
+        } else {
+            Il2CppObject *p = g_weather[i].get(); Vector3 pos = G.trGetPosition[Tr(p)]();
+            pos.y -= (mode == 1 ? 10.0f : 1.6f) * dt;
+            if (pos.y < hp.y - 1.0f) pos = hp + Vector3((Rand01() - 0.5f) * 5.0f, 2.0f + Rand01() * 2.5f, (Rand01() - 0.5f) * 5.0f);
+            G.trSetPosition[Tr(p)](pos);
+        }
+    }
+}
+
 // ---- callbacks ---------------------------------------------------------------
 
 static void OnRoomChange() {
@@ -1395,6 +1465,8 @@ static void OnRoomChange() {
     for (int r = 0; r < kRows; r++) { g_rowCube[r].clear(); g_rowLabel[r].clear(); g_rowText[r].clear(); }
     for (Ref *r : {&g_board, &g_bg, &g_outline, &g_title, &g_titleBar, &g_prev, &g_next, &g_notifyText, &g_tipText}) r->clear();
     for (Ref *r : {&g_menu, &g_pointer, &g_notifyGo, &g_leftPlatform, &g_rightPlatform, &g_gunBall, &g_gunLineGo}) Kill(*r);
+    for (auto &p : g_weather) Kill(p);
+    g_weatherMode = 0;
     PauseTrackers(false);
     g_dancing = false;
     g_gunLine.clear();
@@ -1406,6 +1478,25 @@ static void OnRoomChange() {
     g_gravityOff = false;
     for (Ref *r : {&g_player, &g_rigidbody, &g_leftHand, &g_rightHand, &g_head}) r->clear();
     g_built = false; g_menuShown = false; g_touching = -2; g_haveSpot = false;
+}
+
+static bool g_dashWasDown = false, g_poundWasDown = false;
+static double g_nextDash = 0;
+static void MovementExtrasTick(const Buttons &in) {
+    Il2CppObject *head = g_head.get(), *hand = g_rightHand.get(); if (!head) return;
+    Vector3 v;
+    if (f_superSpeed && in.a && GetVel(v)) { Vector3 f = Flat(G.trGetForward[head]()); SetVel(Vector3(f.x * 15.0f, v.y, f.z * 15.0f)); }
+    if (f_superFly && in.a) SetVel(G.trGetForward[head]() * 22.0f);
+    if (f_rocketBoots && in.ltrig && in.rtrig && GetVel(v)) SetVel(Vector3(v.x, fmaxf(v.y, 14.0f), v.z));
+    bool dashPress = in.x && !g_dashWasDown, poundPress = in.b && !g_poundWasDown;
+    g_dashWasDown = in.x; g_poundWasDown = in.b;
+    if (f_dash && dashPress && g_time >= g_nextDash) { Vector3 f = Flat(G.trGetForward[head]()); SetVel(f * 18.0f + Vector3(0, 3.0f, 0)); g_nextDash = g_time + 0.65; }
+    if (f_groundPound && poundPress && !g_menuShown && GetVel(v)) SetVel(Vector3(v.x, -18.0f, v.z));
+    if (f_grapple && in.lgrip && in.rtrig && hand && G.raycast.IsValid()) {
+        Vector3 start = G.trGetPosition[hand](), dir = G.trGetForward[hand]();
+        BNM::Structures::Unity::RaycastHit hit{};
+        if (G.raycast(start, dir, &hit, 40.0f, -5)) { Vector3 d = hit.point - start; float len = sqrtf(d.x*d.x + d.y*d.y + d.z*d.z); if (len > 0.2f) SetVel(d * (16.0f / len)); }
+    }
 }
 
 static void OnUpdate(float dt) {
@@ -1451,6 +1542,8 @@ static void OnUpdate(float dt) {
     TeleportGunTick(in);
     try { SpawnOnHandTick(in); ItemQueueTick(); }
     catch (...) { g_itemQueue.clear(); ym::log("dark-matter: item code error"); }
+    MovementExtrasTick(in);
+    WeatherTick(dt);
     DanceTick(in, dt);              // last: it moves your hands after everything else
 }
 
