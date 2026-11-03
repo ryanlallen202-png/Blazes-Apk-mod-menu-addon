@@ -639,7 +639,7 @@ static std::vector<Item> g_soundItems;
 static std::vector<std::string> g_soundLabels;
 static double g_time = 0, g_nextPress = 0, g_notifyUntil = 0, g_nextTitle = 0;
 static const float kMenuSizes[] = {0.5f, 0.75f, 1.0f, 1.25f, 1.5f};
-static int g_menuSizeIndex = 2;
+static int g_menuSizeIndex = 1;
 static int g_touching = -2, g_frames = 0;
 static float g_fps = 0;
 
