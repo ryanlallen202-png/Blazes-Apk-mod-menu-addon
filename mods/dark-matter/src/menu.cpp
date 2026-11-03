@@ -441,7 +441,6 @@ static bool f_itemGun, f_spawnOnHand, f_car, f_stickFly, f_dash;
 static bool f_longArms, f_superSpeed, f_megaJump, f_superFly, f_rocket, f_grapple, f_groundPound, f_flingGun, f_propGun, f_bounce;   // Overpowered
 static Ref g_soundSource, g_soundClip;
 static std::vector<std::string> g_soundFiles;
-static std::string g_soundDirectory;
 static size_t g_soundIndex = 0;
 static float g_soundVolume = 0.75f;
 static std::vector<float> g_soundPcm;
@@ -494,8 +493,6 @@ static bool LeftHandItem();
 static void ScanSounds();
 static void PlaySound();
 static void StopSound();
-static void PreviousSound();
-static void NextSound();
 static void SoundVolumeUp();
 static void SoundVolumeDown();
 static void SoundLoadTick();
@@ -1999,7 +1996,6 @@ static void ScanSounds() {
     if (!opened) { Notify("Could not open mods or sounds folders"); return; }
     std::sort(g_soundFiles.begin(), g_soundFiles.end());
     g_soundFiles.erase(std::unique(g_soundFiles.begin(), g_soundFiles.end()), g_soundFiles.end());
-    g_soundDirectory = directories.front();
     g_soundIndex = 0;
     RebuildSoundItems();
     Notify("Found %d WAV/MP3 files", (int)g_soundFiles.size());
@@ -2022,16 +2018,6 @@ static void StopSound() {
     if (Alive(g_soundSource.get()) && G.asSetClip.IsValid()) G.asSetClip[g_soundSource.get()](nullptr);
     Kill(g_soundClip);
 }
-static void SelectSound(int direction) {
-    if (g_soundFiles.empty()) { Notify("No sound files found. Scan the sounds folder"); return; }
-    int n = (int)g_soundFiles.size();
-    g_soundIndex = (size_t)((((int)g_soundIndex + direction) % n + n) % n);
-    const std::string &p = g_soundFiles[g_soundIndex];
-    size_t slash = p.find_last_of('/');
-    Notify("Selected: %s", slash == std::string::npos ? p.c_str() : p.c_str() + slash + 1);
-}
-static void PreviousSound() { SelectSound(-1); }
-static void NextSound() { SelectSound(1); }
 static void SoundVolumeUp() {
     g_soundVolume = fminf(1.0f, g_soundVolume + 0.1f);
     if (Alive(g_soundSource.get())) G.asSetVolume[g_soundSource.get()](g_soundVolume);
