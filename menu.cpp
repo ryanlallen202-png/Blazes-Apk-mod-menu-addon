@@ -19,9 +19,6 @@
 #include <ctime>
 #include <string>
 #include <vector>
-#include <new>
-#define DR_MP3_IMPLEMENTATION
-#include "mods/clientdabell/src/dr_mp3.h"
 
 using namespace BNM;
 using namespace BNM::Structures::Unity;
@@ -1800,18 +1797,18 @@ static void SpawnOnHandTick(const Buttons &in) {
 }
 
 // ---- soundboard: songs you copy onto the headset ----------------------------------------
-// Put .wav or .mp3 files in a folder named "sounds" next to the .so files in the mods folder
+// Put .wav files in a folder named "sounds" next to the .so files in the mods folder
 // (Android/data/com.TrassGames.Yeeps/files/mods/sounds/). Open Soundboard, pick a song, press
 // Play. You hear it on an audio source on your head. With "Others Hear It" on, the song is
 // also sent through Photon Voice: the Recorder (your mic) is switched to the song, and put
 // back to your mic when the song ends, you press Stop, or you leave the room.
-// WAV (PCM 8/16/24/32-bit or 32-bit float) and MP3 are supported. Audio is decoded a little each frame, so
+// WAV only (PCM 8/16/24/32-bit or 32-bit float). The song is read a little each frame, so
 // the game never stalls, and mixed down to mono to save memory. Every song is converted to
 // 48 kHz while it loads: Photon Voice only sends 8/12/16/24/48 kHz, so a 44.1 kHz song
 // (most of them) would sometimes not be heard by the room at all.
 static constexpr int kMaxSongs = 64;
 static constexpr double kMaxSeconds = 272;             // about 4.5 minutes
-static constexpr uint32_t kChunkFrames = 4096;        // 48 kHz frames made per game frame
+static constexpr uint32_t kChunkFrames = 32768;        // 48 kHz frames made per game frame
 static constexpr uint32_t kVoiceRate = 48000;
 static std::vector<std::string> g_songs;
 static int g_songSel = 0, g_soundVol = 1, g_clipSong = -1;
@@ -1830,8 +1827,7 @@ struct Loader {
     int song = -1, lastTen = -1;
     bool playWhenDone = false;
     std::vector<uint8_t> buf;
-    std::vector<float> mono, interleaved;
-    drmp3 *mp3 = nullptr;
+    std::vector<float> mono;
 } g_load;
 
 static uint32_t U32(const uint8_t *p) { return p[0] | (p[1] << 8) | (p[2] << 16) | ((uint32_t)p[3] << 24); }
@@ -1864,13 +1860,13 @@ static void ScanSongs() {
     }
     while (struct dirent *e = readdir(d)) {
         std::string n = e->d_name;
-        if (n.size() > 4 && (strcasecmp(n.c_str() + n.size() - 4, ".wav") == 0 || strcasecmp(n.c_str() + n.size() - 4, ".mp3") == 0) && (int)g_songs.size() < kMaxSongs) g_songs.push_back(n);
+        if (n.size() > 4 && strcasecmp(n.c_str() + n.size() - 4, ".wav") == 0 && (int)g_songs.size() < kMaxSongs) g_songs.push_back(n);
     }
     closedir(d);
     std::sort(g_songs.begin(), g_songs.end());
     UpdateSoundLabel();
     ym::log("clientdabell: found %d songs", (int)g_songs.size());
-    Notify(g_songs.empty() ? "No .wav or .mp3 files in the sounds folder" : "%d songs found", (int)g_songs.size());
+    Notify(g_songs.empty() ? "No .wav files in the sounds folder" : "%d songs found", (int)g_songs.size());
 }
 
 // Reads the WAV header and leaves the file positioned at the first sample.
@@ -1922,51 +1918,11 @@ static bool OpenWav(const std::string &path, Loader &L, const char **err) {
     return true;
 }
 
-// MP3 is decoded incrementally by LoadTick; the decoder owns its file handle.
-static bool OpenMp3(const std::string &path, Loader &L, const char **err) {
-    L.mp3 = new (std::nothrow) drmp3{};
-    if (!L.mp3 || !drmp3_init_file(L.mp3, path.c_str(), nullptr)) {
-        delete L.mp3;
-        L.mp3 = nullptr;
-        *err = "Couldn't decode that MP3";
-        return false;
-    }
-    L.channels = (int)L.mp3->channels;
-    L.rate = L.mp3->sampleRate;
-    if (L.channels < 1 || L.channels > 2 || L.rate < 8000 || L.rate > 192000) {
-        drmp3_uninit(L.mp3);
-        delete L.mp3;
-        L.mp3 = nullptr;
-        *err = "Unsupported MP3 format";
-        return false;
-    }
-    L.frames = drmp3_get_pcm_frame_count(L.mp3);
-    if (L.frames == 0) {
-        drmp3_uninit(L.mp3);
-        delete L.mp3;
-        L.mp3 = nullptr;
-        *err = "Couldn't read the MP3 length";
-        return false;
-    }
-    return true;
-}
-
-static void CloseLoader(Loader &L) {
-    if (L.f) fclose(L.f);
-    L.f = nullptr;
-    if (L.mp3) {
-        drmp3_uninit(L.mp3);
-        delete L.mp3;
-        L.mp3 = nullptr;
-    }
-}
-
 static void AbortLoad() {
-    CloseLoader(g_load);
+    if (g_load.f) fclose(g_load.f);
+    g_load.f = nullptr;
     g_load.buf.clear();
     g_load.buf.shrink_to_fit();
-    g_load.interleaved.clear();
-    g_load.interleaved.shrink_to_fit();
     g_chunk.clear();
 }
 
@@ -2007,9 +1963,8 @@ static Il2CppObject *FindRecorder() {
     if (!Alive(r) && (G.findScene.IsValid() || G.findSceneByType.IsValid())) {   // else any Recorder, an enabled one first
         auto *arr = (uint8_t *)(G.findScene.IsValid() ? G.findScene((Il2CppObject *)G.tRecorder)
                                                       : G.findSceneByType((Il2CppObject *)G.tRecorder, 0));
-        auto *managed = (BNM::Structures::Mono::Array<Il2CppObject *> *)arr;
-        uintptr_t n = managed ? (uintptr_t)managed->GetCapacity() : 0;
-        auto **el = managed ? managed->GetData() : nullptr;
+        uintptr_t n = arr ? *(uintptr_t *)(arr + 0x18) : 0;
+        auto **el = arr ? (Il2CppObject **)(arr + 0x20) : nullptr;
         for (uintptr_t i = 0; i < n && !Alive(r); i++)
             if (Alive(el[i]) && (!G.behaviourGetEnabled.IsValid() || G.behaviourGetEnabled[el[i]]())) r = el[i];
         for (uintptr_t i = 0; i < n && !Alive(r); i++) if (Alive(el[i])) r = el[i];
@@ -2143,7 +2098,7 @@ static void SoundMicToggled() {
     // so you and the room hear it from the same spot.
     Il2CppObject *src = g_audioSrc.get();
     bool playing = Alive(src) && G.asIsPlaying.IsValid() && G.asIsPlaying[src]();
-    if (playing && !g_micOn && !(g_load.f || g_load.mp3) && Alive(g_clip.get())) { PlayLoaded(); return; }
+    if (playing && !g_micOn && !g_load.f && Alive(g_clip.get())) { PlayLoaded(); return; }
     Notify("Soundboard: the room hears it");
 }
 
@@ -2168,13 +2123,9 @@ static void StartLoad(int song, bool playAfter) {
     }
     Loader L;
     const char *err = "";
-    if (song < 0 || song >= (int)g_songs.size()) { Notify("Invalid song selection"); return; }
-    const std::string path = SongsDir() + "/" + g_songs[song];
-    const std::string &name = g_songs[song];
-    const bool isMp3 = name.size() > 4 && strcasecmp(name.c_str() + name.size() - 4, ".mp3") == 0;
-    if (!(isMp3 ? OpenMp3(path, L, &err) : OpenWav(path, L, &err))) { Notify("%s", err); return; }
-    if (L.frames == 0) { CloseLoader(L); Notify("That song is empty"); return; }
-    if ((double)L.frames / L.rate > kMaxSeconds) { CloseLoader(L); Notify("Song too long (max about 4 minutes)"); return; }
+    if (!OpenWav(SongsDir() + "/" + g_songs[song], L, &err)) { Notify("%s", err); return; }
+    if (L.frames == 0) { fclose(L.f); Notify("That song is empty"); return; }
+    if ((double)L.frames / L.rate > kMaxSeconds) { fclose(L.f); Notify("Song too long (max about 4 minutes)"); return; }
     L.step = (double)L.rate / kVoiceRate;
     L.outFrames = (uint64_t)((double)L.frames / L.step);
     if (L.outFrames == 0) L.outFrames = 1;
@@ -2183,12 +2134,11 @@ static void StartLoad(int song, bool playAfter) {
     g_clipSong = -1;
     Il2CppObject *clip = G.audioClipCreate(CreateMonoString(SongTitle(song).c_str()), (int)L.outFrames, 1, (int)kVoiceRate, false);
     Il2CppObject *chunk = (Il2CppObject *)G.arrayNew(G.floatClass, kChunkFrames);
-    if (!clip || !chunk) { CloseLoader(L); Notify("Not enough memory for that song"); return; }
+    if (!clip || !chunk) { fclose(L.f); Notify("Not enough memory for that song"); return; }
     g_clip.set(clip);
     g_chunk.set(chunk);
     size_t srcMax = (size_t)(kChunkFrames * L.step) + 4;          // file frames one slice can need
-    if (L.mp3) L.interleaved.resize(srcMax * (size_t)L.channels);
-    else L.buf.resize(srcMax * L.block);
+    L.buf.resize(srcMax * L.block);
     L.mono.resize(srcMax);
     L.song = song;
     L.playWhenDone = playAfter;
@@ -2202,7 +2152,7 @@ static void StartLoad(int song, bool playAfter) {
 // 48 kHz (straight-line between samples) and writes 32k frames into the clip.
 static void LoadTick() {
     Loader &L = g_load;
-    if (!L.f && !L.mp3) return;
+    if (!L.f) return;
     Il2CppObject *clip = g_clip.get();
     if (!Alive(clip)) { AbortLoad(); return; }
     uint64_t wantOut = L.outFrames - L.outDone < kChunkFrames ? L.outFrames - L.outDone : kChunkFrames;
@@ -2211,36 +2161,24 @@ static void LoadTick() {
     if (needEnd > L.frames) needEnd = L.frames;
     uint64_t readN = needEnd > L.done ? needEnd - L.done : 0;
     if (readN > L.mono.size()) readN = L.mono.size();
-    uint64_t n = 0;
+    uint64_t n = readN ? fread(L.buf.data(), 1, (size_t)(readN * L.block), L.f) / L.block : 0;
+    const int bytes = L.bits / 8;
     const float inv = 1.0f / (float)L.channels;
-    if (L.mp3) {
-        if (readN > L.interleaved.size() / (size_t)L.channels) readN = L.interleaved.size() / (size_t)L.channels;
-        n = readN ? drmp3_read_pcm_frames_f32(L.mp3, readN, L.interleaved.data()) : 0;
-        for (uint64_t i = 0; i < n; i++) {
-            float sum = 0;
-            for (int c = 0; c < L.channels; c++) sum += L.interleaved[(size_t)i * L.channels + c];
-            float m = sum * inv;
-            L.mono[i] = m > 1 ? 1.f : m < -1 ? -1.f : m;
+    for (uint64_t i = 0; i < n; i++) {
+        const uint8_t *p = L.buf.data() + i * L.block;
+        float sum = 0;
+        for (int c = 0; c < L.channels; c++) {
+            const uint8_t *q = p + c * bytes;
+            float v;
+            if (L.fmt == 3) { uint32_t u = U32(q); memcpy(&v, &u, 4); }
+            else if (L.bits == 16) v = (float)(int16_t)U16(q) * (1.0f / 32768.0f);
+            else if (L.bits == 24) v = (float)(int32_t)(((uint32_t)q[0] << 8) | ((uint32_t)q[1] << 16) | ((uint32_t)q[2] << 24)) * (1.0f / 2147483648.0f);
+            else if (L.bits == 32) v = (float)(int32_t)U32(q) * (1.0f / 2147483648.0f);
+            else v = ((float)q[0] - 128.0f) * (1.0f / 128.0f);
+            sum += v;
         }
-    } else {
-        n = readN ? fread(L.buf.data(), 1, (size_t)(readN * L.block), L.f) / L.block : 0;
-        const int bytes = L.bits / 8;
-        for (uint64_t i = 0; i < n; i++) {
-            const uint8_t *p = L.buf.data() + i * L.block;
-            float sum = 0;
-            for (int c = 0; c < L.channels; c++) {
-                const uint8_t *q = p + c * bytes;
-                float v;
-                if (L.fmt == 3) { uint32_t u = U32(q); memcpy(&v, &u, 4); }
-                else if (L.bits == 16) v = (float)(int16_t)U16(q) * (1.0f / 32768.0f);
-                else if (L.bits == 24) v = (float)(int32_t)(((uint32_t)q[0] << 8) | ((uint32_t)q[1] << 16) | ((uint32_t)q[2] << 24)) * (1.0f / 2147483648.0f);
-                else if (L.bits == 32) v = (float)(int32_t)U32(q) * (1.0f / 2147483648.0f);
-                else v = ((float)q[0] - 128.0f) * (1.0f / 128.0f);
-                sum += v;
-            }
-            float m = sum * inv;
-            L.mono[i] = m > 1 ? 1.f : m < -1 ? -1.f : m;
-        }
+        float m = sum * inv;
+        L.mono[i] = m > 1 ? 1.f : m < -1 ? -1.f : m;
     }
     const uint64_t base = L.done;
     L.done += n;
@@ -2249,13 +2187,7 @@ static void LoadTick() {
     if (wantOut > 0) {
         Il2CppObject *arr = wantOut == kChunkFrames ? g_chunk.get() : (Il2CppObject *)G.arrayNew(G.floatClass, (uintptr_t)wantOut);
         if (!arr) { AbortLoad(); Notify("Not enough memory for that song"); return; }
-        auto *managed = (BNM::Structures::Mono::Array<float> *)arr;
-        if (!managed || managed->GetCapacity() < wantOut || !managed->GetData()) {
-            AbortLoad();
-            Notify("Audio buffer wasn't valid");
-            return;
-        }
-        float *dst = managed->GetData();
+        float *dst = (float *)((uint8_t *)arr + 0x20);
         auto S = [&](uint64_t k) -> float {                           // file sample k, from this slice or the last
             if (k + 2 == base) return L.prevA;
             if (k + 1 == base) return L.prevB;
@@ -2288,8 +2220,8 @@ static void LoadTick() {
 }
 
 static void PlaySong() {
-    if (g_songs.empty()) { Notify("Put .wav or .mp3 files in the sounds folder, then Rescan"); return; }
-    if (g_load.f || g_load.mp3) { Notify("Still loading, one moment"); return; }
+    if (g_songs.empty()) { Notify("Put .wav files in the sounds folder, then Rescan"); return; }
+    if (g_load.f) { Notify("Still loading, one moment"); return; }
     if (g_clipSong == g_songSel && Alive(g_clip.get())) PlayLoaded();
     else StartLoad(g_songSel, true);
 }
@@ -2376,9 +2308,7 @@ static void BuildThunderClip() {
     Il2CppObject *clip = G.audioClipCreate(CreateMonoString("ClientDaBellThunder"), n, 1, rate, false);
     Il2CppObject *arr = (Il2CppObject *)G.arrayNew(G.floatClass, n);
     if (!clip || !arr) return;
-    auto *managed = (BNM::Structures::Mono::Array<float> *)arr;
-    if (!managed || managed->GetCapacity() < (uintptr_t)n || !managed->GetData()) return;
-    float *d = managed->GetData();
+    float *d = (float *)((uint8_t *)arr + 0x20);
     float lp = 0, lp2 = 0;
     for (int i = 0; i < n; i++) {
         float t = (float)i / rate, noise = Rand01() * 2 - 1;
