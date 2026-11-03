@@ -1577,7 +1577,7 @@ static void ArmDupe27Wide() {
 static void SpawnItemCircle() {
     if (!LeftHandItem()) return;
     Il2CppObject *head = g_head.get(); if (!head) return;
-    Vector3 hp = G.trGetPosition[head];
+    Vector3 hp = G.trGetPosition[head]();
     std::vector<PendingItem> list;
     for (int i = 0; i < 27; ++i) {
         float a = (float)i * 6.2831853f / 27.0f;
@@ -1588,7 +1588,7 @@ static void SpawnItemCircle() {
 static void SpawnItemRain() {
     if (!LeftHandItem()) return;
     Il2CppObject *head = g_head.get(); if (!head) return;
-    Vector3 hp = G.trGetPosition[head];
+    Vector3 hp = G.trGetPosition[head]();
     std::vector<PendingItem> list;
     for (int i = 0; i < 27; ++i) {
         float x = (Rand01() - 0.5f) * 5.0f, z = (Rand01() - 0.5f) * 5.0f;
