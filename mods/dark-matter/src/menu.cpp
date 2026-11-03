@@ -1884,7 +1884,7 @@ static void OnUpdate(float dt) {
     if (g_time - fpsStart >= 1.0) { g_fps = (float)(g_frames / (g_time - fpsStart)); g_frames = 0; fpsStart = g_time; }
     if (!Lookups()) return;
     auto *player = (Il2CppObject *)ym::api()->localPlayer();
-    if (!player) return;
+    if (!player) { if (g_soundActive) StopSound(); return; }
     if (player != g_player.get()) {                 // first frame in this room
         StopSound();
         g_soundSource.clear();
