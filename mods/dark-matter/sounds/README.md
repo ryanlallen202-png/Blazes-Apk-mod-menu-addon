@@ -38,11 +38,19 @@ build/test-venv/bin/pip install lameenc==1.9.0
 build/test-venv/bin/python mods/dark-matter/tests/test_soundboard.py
 ```
 
-All five tests passed in the development sandbox. They include guards for exact audio overload selection and stop/configure/start recorder ordering, but do not run Unity or Photon Voice. Android compilation requires the NDK; room audio and microphone restoration must be tested on a headset with another consenting listener.
+All eight tests passed in the development sandbox, including runtime-call argument marshalling, GC-handle replacement, exact audio overload selection, recorder ordering, and startup retry guards. They do not run Unity or Photon Voice. Android compilation requires the NDK; room audio and microphone restoration must be tested on a headset with another consenting listener.
 
 ## Playback crash diagnostics
 
-The **Soundboard Playback Fix 2** build selects `AudioClip.SetData(System.Single[], System.Int32)` explicitly instead of choosing a potentially incompatible two-argument overload. It also selects the string GameObject constructor explicitly and stops the voice recorder before changing its input. These address concrete playback risks; the reported headset crash cannot be confirmed resolved without an on-device retest.
+The **Audio Runtime Fix 4** build retains exact overload selection and uses `il2cpp_runtime_invoke` for clip creation, PCM uploads, AudioSource playback, and voice-recorder configuration. Managed exceptions are checked rather than escaping from those calls. It uses the documented 32-bit GC-handle ABI and roots replacement objects and upload arrays before runtime calls. A managed voice-routing failure preserves local playback where possible. These address concrete playback risks; the reported headset crash cannot be confirmed resolved without an on-device retest.
+
+## Menu missing after restart
+
+Replace the existing `dark-matter.so` with this newly built revision; do not leave multiple Dark Matter `.so` copies installed. The loader can skip a previously crashed binary until its file changes. This patch does not disable that crash protection.
+
+The menu now retries startup lookups, waits for valid hand/head transforms and a font, and retries failed UI construction. It rebuilds after room-change callbacks or loss of its scene objects. On a fresh launch, hold **Y** to open it (or **B** if right-hand mode has been selected in that session).
+
+If the menu is still missing, inspect `bnm_checkpoint.txt` for the mod's load/skip reason. A `DISABLE` file in `mods/` intentionally prevents all mods loading; remove it only when you intend to re-enable them. Confirm the newest blaze APK from the official Discord is installed. Do not clear game account data.
 
 If either format still crashes, send the final lines containing `dark-matter sound:` from:
 

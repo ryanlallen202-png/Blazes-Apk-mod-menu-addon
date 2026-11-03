@@ -42,6 +42,126 @@ class SoundboardTests(unittest.TestCase):
             subprocess.run([compiler, "-std=c++20", "-Wall", "-Wextra", "-Werror", str(cpp), "-o", str(exe)], check=True)
             subprocess.run([str(exe)], check=True)
 
+    def test_runtime_audio_marshalling(self):
+        compiler = shutil.which("c++")
+        if not compiler:
+            self.skipTest("A host C++ compiler is required")
+        source = SOURCE.read_text()
+        helper = source[source.index("static Il2CppObject *(*p_audioInvoke)"):source.index("static Color Lerp")]
+        program = '''#include <cassert>
+#include <type_traits>
+#include <stdexcept>
+namespace BNM::IL2CPP {
+struct MethodInfo { const char *name; };
+struct Il2CppException {};
+}
+struct Il2CppObject { bool value; };
+struct MethodBase {
+    bool valid = true;
+    BNM::IL2CPP::MethodInfo info{"test"};
+    bool IsValid() const { return valid; }
+    const BNM::IL2CPP::MethodInfo *GetInfo() const { return &info; }
+};
+namespace ym { void log(const char *, ...) {} }
+'''+helper+'''
+static Il2CppObject instance{false}, reference{false}, boxed{true};
+static BNM::IL2CPP::Il2CppException exception;
+static int mode = 0;
+static Il2CppObject *Invoke(const BNM::IL2CPP::MethodInfo *, void *target, void **args,
+                           BNM::IL2CPP::Il2CppException **error) {
+    assert(target == &instance);
+    if (mode == 0) {
+        assert(args[0] == &reference);
+        assert(*(int *)args[1] == 4096);
+        assert(*(float *)args[2] == 0.75f);
+        assert(*(bool *)args[3] == false);
+        assert(args[4] == nullptr);
+    } else {
+        assert(args == nullptr);
+        if (mode == 2) *error = &exception;
+    }
+    return &boxed;
+}
+static void *Unbox(Il2CppObject *object) { return &object->value; }
+int main() {
+    MethodBase method;
+    p_audioInvoke = Invoke;
+    p_audioUnbox = Unbox;
+    assert(AudioCall<bool>(method, &instance, &reference, 4096, 0.75f, false, (Il2CppObject *)nullptr));
+    mode = 1;
+    assert(AudioCall<Il2CppObject *>(method, &instance) == &boxed);
+    AudioCall<void>(method, &instance);
+    mode = 2;
+    bool caught = false;
+    try { AudioCall<void>(method, &instance); } catch (const std::runtime_error &) { caught = true; }
+    assert(caught);
+    p_audioInvoke = nullptr;
+    caught = false;
+    try { AudioCall<void>(method, &instance); } catch (const std::runtime_error &) { caught = true; }
+    assert(caught);
+}
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            cpp = pathlib.Path(directory) / "invoke_test.cpp"
+            exe = pathlib.Path(directory) / "invoke_test"
+            cpp.write_text(program)
+            subprocess.run([compiler, "-std=c++20", "-Wall", "-Wextra", "-Werror", str(cpp), "-o", str(exe)], check=True)
+            subprocess.run([str(exe)], check=True)
+
+    def test_gc_handle_replacement(self):
+        compiler = shutil.which("c++")
+        if not compiler:
+            self.skipTest("A host C++ compiler is required")
+        source = SOURCE.read_text()
+        helper = source[source.index("static uint32_t (*p_handleNew)"):source.index("// Audio calls use")]
+        program = '''#include <cstdint>
+#include <cassert>
+#include <map>
+struct Il2CppObject {};
+'''+helper+'''
+static std::map<uint32_t, Il2CppObject *> handles;
+static uint32_t nextHandle = 1;
+static bool replacing = false;
+static uint32_t New(Il2CppObject *object, bool pinned) {
+    assert(!pinned);
+    if (replacing) assert(!handles.empty());
+    auto handle = nextHandle++;
+    handles[handle] = object;
+    return handle;
+}
+static Il2CppObject *Target(uint32_t handle) { return handles.at(handle); }
+static void Free(uint32_t handle) { assert(handles.erase(handle) == 1); }
+int main() {
+    p_handleNew = New; p_handleTarget = Target; p_handleFree = Free;
+    Il2CppObject object;
+    Ref ref;
+    ref.set(&object);
+    replacing = true;
+    ref.set(ref.get());
+    assert(ref.get() == &object && handles.size() == 1);
+    ref.clear();
+    assert(handles.empty() && ref.get() == nullptr);
+    ref.clear();
+}
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            cpp = pathlib.Path(directory) / "handle_test.cpp"
+            exe = pathlib.Path(directory) / "handle_test"
+            cpp.write_text(program)
+            subprocess.run([compiler, "-std=c++20", "-Wall", "-Wextra", "-Werror", str(cpp), "-o", str(exe)], check=True)
+            subprocess.run([str(exe)], check=True)
+
+    def test_startup_retries(self):
+        source = SOURCE.read_text()
+        start = source.index("static void OnUpdate(float dt) {")
+        update = source[start:source.index("YM_EXPORT int YeepsMod_Init", start)]
+        self.assertIn("if (!Alive(g_leftHand.get())) g_leftHand.set", update)
+        self.assertIn("if (!Alive(g_rightHand.get())) g_rightHand.set", update)
+        self.assertIn("if (!Alive(g_head.get())) g_head.set", update)
+        self.assertIn("if (!g_built) return;", update)
+        self.assertIn("ym::onRoomChange(OnRoomChange)", source)
+        self.assertIn("static uint32_t (*p_handleNew)(Il2CppObject *, bool)", source)
+
     def test_menu_syntax(self):
         """Parse the full translation unit; platform declarations are host-only shims."""
         compiler = shutil.which("c++")
@@ -119,20 +239,20 @@ int main(int argc, char **argv) {
         self.assertNotIn('G.voiceRestartRecording', source)
         playback_start = source.index("static bool StartVoicePlayback")
         playback = source[playback_start:source.index("// ---- soundboard playback", playback_start)]
-        self.assertLess(playback.index("G.voiceStopRecording[recorder]()"),
-                        playback.index("G.voiceSetAudioClip[recorder](clip)"))
-        self.assertLess(playback.index("G.voiceSetSourceType[recorder](1)"),
-                        playback.index("G.voiceStartRecording[recorder]()"))
+        self.assertLess(playback.index("AudioCall<void>(G.voiceStopRecording, recorder)"),
+                        playback.index("AudioCall<void>(G.voiceSetAudioClip, recorder, clip)"))
+        self.assertLess(playback.index("AudioCall<void>(G.voiceSetSourceType, recorder, 1)"),
+                        playback.index("AudioCall<void>(G.voiceStartRecording, recorder)"))
         restore_start = source.index("static void RestoreVoiceInput() {")
         restore = source[restore_start:playback_start]
-        self.assertLess(restore.index("G.voiceStopRecording[recorder]()"),
-                        restore.index("G.voiceSetAudioClip[recorder]"))
-        self.assertLess(restore.index("G.voiceSetSourceType[recorder]"),
-                        restore.index("G.voiceStartRecording[recorder]()"))
+        self.assertLess(restore.index("AudioCall<void>(G.voiceStopRecording, recorder)"),
+                        restore.index("AudioCall<void>(G.voiceSetAudioClip, recorder"))
+        self.assertLess(restore.index("AudioCall<void>(G.voiceSetSourceType, recorder"),
+                        restore.index("AudioCall<void>(G.voiceStartRecording, recorder)"))
 
     def test_upload_and_playback_guards(self):
         source = SOURCE.read_text()
-        self.assertIn("G.audioClipSetData[g_soundClip.get()](arr, (int)g_soundLoadOffset)", source)
+        self.assertIn("AudioCall<bool>(G.audioClipSetData, g_soundClip.get(), arr, (int)g_soundLoadOffset)", source)
         self.assertIn("if (state != 2) return;", source)
         self.assertIn("const std::string &p = g_soundPlayingPath;", source)
         start = source.index("static void StopSound() {")
