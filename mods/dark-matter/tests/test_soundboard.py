@@ -12,6 +12,16 @@ SOURCE = pathlib.Path(__file__).resolve().parents[1] / "src/menu.cpp"
 
 
 class SoundboardTests(unittest.TestCase):
+    def test_client_branding(self):
+        source = SOURCE.read_text()
+        self.assertIn('YEEPS_MOD("Diddy Client")', source)
+        self.assertIn('const char *word = "DIDDY CLIENT";', source)
+        self.assertIn('Label(ct, "DIDDY CLIENT"', source)
+        self.assertNotIn('DARK MATTER', source)
+        cmake = SOURCE.parents[1] / "CMakeLists.txt"
+        self.assertIn('add_yeeps_mod(diddy-client ', cmake.read_text())
+        self.assertIn('dark-matter sound:', source)
+
     def test_wav_parser(self):
         compiler = shutil.which("c++")
         if not compiler:

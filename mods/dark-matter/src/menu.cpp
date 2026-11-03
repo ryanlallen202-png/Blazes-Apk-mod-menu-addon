@@ -1,4 +1,4 @@
-// DARK MATTER: a hand menu built from the starter menu (ii's Stupid Menu layout).
+// DIDDY CLIENT: a hand menu built from the starter menu (ii's Stupid Menu layout).
 // The layout idea comes from ii's menu; the code is new.
 //   Hold Y (left hand)      -> menu on your left hand, tipped like ii's; turn your palm to you
 //                              (B and the right hand with "Right Hand Menu")
@@ -36,7 +36,7 @@ using namespace BNM;
 using namespace BNM::Structures::Unity;
 using BNM::IL2CPP::Il2CppObject;
 
-YEEPS_MOD("DARK MATTER")
+YEEPS_MOD("Diddy Client")
 #define DM_VERSION "Legacy Voice Fix 9"
 
 // ---- small helpers ---------------------------------------------------------
@@ -998,7 +998,7 @@ static void BuildMenu() {
     auto NewObject = [](const char *name) {
         return Class("UnityEngine", "GameObject").CreateNewObjectParameters(CreateMonoString(name));
     };
-    Il2CppObject *menu = NewObject("DARK MATTERMenu"), *board = NewObject("DARK MATTERMenuBoard");
+    Il2CppObject *menu = NewObject("DIDDY CLIENTMenu"), *board = NewObject("DIDDY CLIENTMenuBoard");
     if (!menu || !board) {
         if (menu) G.destroy(menu);
         if (board) G.destroy(board);
@@ -1024,7 +1024,7 @@ static void BuildMenu() {
 
     if (Il2CppObject *canvas = Canvas(bt, Vector3(0, 0, -0.0105f), kBoardW + 2 * kSideX, kBoardH + 0.1f)) {
         Il2CppObject *ct = Tr(canvas);
-        Label(ct, "DARK MATTER", Vector3(0, kTitleY, 0), kBtnW, 0.045f, 32, &g_title);
+        Label(ct, "DIDDY CLIENT", Vector3(0, kTitleY, 0), kBtnW, 0.045f, 32, &g_title);
         for (int r = 0; r < kRows; r++)
             g_rowLabel[r].set(Label(ct, "", Vector3(0, RowY(r), 0), kBtnW, kBtnH, 19, &g_rowText[r]));
         Label(ct, "<", Vector3(-kSideX, 0, -0.0005f), kSideW, 0.05f, 34, nullptr);
@@ -1099,7 +1099,7 @@ static void RenderPage() {
 
 static int Hex(float v) { return (int)(v < 0 ? 0 : v > 1 ? 255 : v * 255); }
 
-// The title is "DARK MATTER" with a moving plush-blue gradient, one color per letter
+// The title is "DIDDY CLIENT" with a moving plush-blue gradient, one color per letter
 // (rich text). Rebuilt ten times a second, not every frame.
 static void UpdateTitle() {
     if (g_time < g_nextTitle) return;
@@ -1107,7 +1107,7 @@ static void UpdateTitle() {
     static const Color kFire[] = {Color(0.20f, 0.50f, 1.0f, 1), Color(0.45f, 0.75f, 1.0f, 1), Color(0.85f, 0.95f, 1.0f, 1), Color(0.45f, 0.75f, 1.0f, 1)};   // plush blue shimmer
     char buf[1024];
     int n = 0;
-    const char *word = "DARK MATTER";
+    const char *word = "DIDDY CLIENT";
     for (int i = 0; word[i]; i++) {
         float t = (float)g_time * 1.5f - i * 0.35f;
         Color c;
@@ -1552,7 +1552,7 @@ static void TeleportGunTick(const Buttons &in) {
     if (!hand || !G.raycast.IsValid() || !G.lrSetPosition.IsValid()) return;
     if (!g_gunBall.get()) {                              // made once per room
         Il2CppObject *ball = Prim(0, T().bgB, false);
-        Il2CppObject *lineGo = Class("UnityEngine", "GameObject").CreateNewObjectParameters(CreateMonoString("DARK MATTERGunLine"));
+        Il2CppObject *lineGo = Class("UnityEngine", "GameObject").CreateNewObjectParameters(CreateMonoString("DIDDY CLIENTGunLine"));
         Il2CppObject *line = lineGo && G.tLine ? G.goAddComponent[lineGo](G.tLine) : nullptr;
         if (!ball || !line) return;
         G.trSetLocalScale[Tr(ball)](Vector3(0.1f, 0.1f, 0.1f));
@@ -2407,7 +2407,7 @@ static void SoundLoadTick() {
             StopSound(); Notify("Invalid decoded audio"); return;
         }
         ym::log("dark-matter sound: creating clip frames=%zu channels=%d rate=%d", frames, channels, rate);
-        Il2CppObject *clip = AudioCall<Il2CppObject *>(G.audioClipCreate, nullptr, CreateMonoString("DARK MATTER Sound"),
+        Il2CppObject *clip = AudioCall<Il2CppObject *>(G.audioClipCreate, nullptr, CreateMonoString("DIDDY CLIENT Sound"),
             (int)frames, channels, rate, false);
         if (!clip) { StopSound(); Notify("Could not create audio clip"); return; }
         g_soundClip.set(clip);
@@ -2484,7 +2484,7 @@ static void NextWeatherIntensity() { g_wxIntensity = (g_wxIntensity + 1) % 3; No
 
 static bool EnsureWxRoot() {
     if (Alive(g_wxRoot.get())) return true;
-    Il2CppObject *go = Class("UnityEngine", "GameObject").CreateNewObjectParameters(CreateMonoString("DARK MATTERWeather"));
+    Il2CppObject *go = Class("UnityEngine", "GameObject").CreateNewObjectParameters(CreateMonoString("DIDDY CLIENTWeather"));
     if (!go) return false;
     g_wxRoot.set(go);
     return true;
@@ -2508,7 +2508,7 @@ static void StyleFx(int i, int mode) {
 static void BuildThunderClip() {
     if (Alive(g_wxClip.get()) || !G.audioClipCreate.IsValid() || !G.audioClipSetData.IsValid() || !G.arrayNew || !G.floatClass) return;
     const int rate = 22050, n = rate * 3;
-    Il2CppObject *clip = G.audioClipCreate(CreateMonoString("DARK MATTERThunder"), n, 1, rate, false);
+    Il2CppObject *clip = G.audioClipCreate(CreateMonoString("DIDDY CLIENTThunder"), n, 1, rate, false);
     Il2CppObject *arr = (Il2CppObject *)G.arrayNew(G.floatClass, n);
     if (!clip || !arr) return;
     float *d = (float *)((uint8_t *)arr + 0x20);
@@ -2529,7 +2529,7 @@ static void BuildThunderClip() {
 static void PlayThunder() {
     if (!Alive(g_wxClip.get()) || !G.tAudioSource || !G.asPlay.IsValid() || !g_head.get()) return;
     if (!Alive(g_wxAudioGo.get()) || !Alive(g_wxAudioSrc.get())) {
-        Il2CppObject *go = Class("UnityEngine", "GameObject").CreateNewObjectParameters(CreateMonoString("DARK MATTERThunderAudio"));
+        Il2CppObject *go = Class("UnityEngine", "GameObject").CreateNewObjectParameters(CreateMonoString("DIDDY CLIENTThunderAudio"));
         Il2CppObject *src = go ? G.goAddComponent[go](G.tAudioSource) : nullptr;
         if (!src) return;
         G.trSetParent[Tr(go)](g_head.get(), false);
@@ -2548,7 +2548,7 @@ static void EnsureStorm() {
     if (!EnsureWxRoot()) return;
     if (!Alive(g_wxLight.get())) {
         Class light("UnityEngine", "Light");
-        Il2CppObject *go = light.IsValid() ? Class("UnityEngine", "GameObject").CreateNewObjectParameters(CreateMonoString("DARK MATTERLightning")) : nullptr;
+        Il2CppObject *go = light.IsValid() ? Class("UnityEngine", "GameObject").CreateNewObjectParameters(CreateMonoString("DIDDY CLIENTLightning")) : nullptr;
         Il2CppObject *l = go ? G.goAddComponent[go](light.GetMonoType()) : nullptr;
         if (l) {
             g_lightType = light.GetMethod("set_type", 1);
@@ -2689,7 +2689,7 @@ static void EnsureDisco() {
     LightMethods(light);
     for (int i = 0; i < kDiscoLights; i++) {
         if (Alive(g_discoLight[i].get())) continue;
-        Il2CppObject *go = Class("UnityEngine", "GameObject").CreateNewObjectParameters(CreateMonoString("DARK MATTERDiscoLight"));
+        Il2CppObject *go = Class("UnityEngine", "GameObject").CreateNewObjectParameters(CreateMonoString("DIDDY CLIENTDiscoLight"));
         Il2CppObject *l = go ? G.goAddComponent[go](light.GetMonoType()) : nullptr;
         if (!l) continue;
         G.trSetParent[Tr(go)](root, false);
@@ -3000,7 +3000,7 @@ static void TodRestore(bool sceneToo) {
 }
 static void EnsureTodObjects() {
     if (Alive(g_todRoot.get())) return;
-    Il2CppObject *root = Class("UnityEngine", "GameObject").CreateNewObjectParameters(CreateMonoString("DARK MATTERSky"));
+    Il2CppObject *root = Class("UnityEngine", "GameObject").CreateNewObjectParameters(CreateMonoString("DIDDY CLIENTSky"));
     if (!root) return;
     g_todRoot.set(root);
     Il2CppObject *rt = Tr(root);
@@ -3050,7 +3050,7 @@ static void TodApply(int tod) {
     if (TS.lights == 0 && Alive(g_todRoot.get())) {                // the map has no sun light: use our own
         if (!Alive(g_todOwnLight.get())) {
             Class light("UnityEngine", "Light");
-            Il2CppObject *go = Class("UnityEngine", "GameObject").CreateNewObjectParameters(CreateMonoString("DARK MATTERSun"));
+            Il2CppObject *go = Class("UnityEngine", "GameObject").CreateNewObjectParameters(CreateMonoString("DIDDY CLIENTSun"));
             Il2CppObject *l = go && light.IsValid() ? G.goAddComponent[go](light.GetMonoType()) : nullptr;
             if (l) { G.trSetParent[Tr(go)](Tr(g_todRoot.get()), false); if (g_lightType.IsValid()) g_lightType[l](1); g_todOwnLight.set(l); }
         }
@@ -3454,7 +3454,7 @@ static void GrappleHand(Grapple &g, Il2CppObject *hand, bool trig, float dt, Vec
         g.point = hit.point;
         g.on = true;
         if (!g.line.get()) {                                       // each rope is made once
-            Il2CppObject *lineGo = Class("UnityEngine", "GameObject").CreateNewObjectParameters(CreateMonoString("DARK MATTERGrapple"));
+            Il2CppObject *lineGo = Class("UnityEngine", "GameObject").CreateNewObjectParameters(CreateMonoString("DIDDY CLIENTGrapple"));
             Il2CppObject *line = lineGo && G.tLine ? G.goAddComponent[lineGo](G.tLine) : nullptr;
             if (!line) { g.on = false; return; }
             if (Il2CppObject *m = G.rendererGetMaterial[line]()) {
@@ -3645,6 +3645,6 @@ YM_EXPORT int YeepsMod_Init(const YeepsModApi *api) {
     if (!ym::init(api)) return -1;
     ym::onRoomChange(OnRoomChange);
     ym::onUpdate(OnUpdate);
-    ym::log("DARK MATTER %s loaded on %s (%s)", DM_VERSION, api->gameVersion, api->buildId);
+    ym::log("DIDDY CLIENT %s loaded on %s (%s)", DM_VERSION, api->gameVersion, api->buildId);
     return 0;
 }

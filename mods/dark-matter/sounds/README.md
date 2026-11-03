@@ -1,4 +1,4 @@
-# DARK MATTER Soundboard
+# Diddy Client Soundboard
 
 Put your own clips on the headset in:
 
@@ -46,7 +46,7 @@ The **Unity 6 Handle Fix 5** build retains exact overload selection and uses `il
 
 ## Menu missing after restart
 
-Replace the existing `dark-matter.so` with this newly built revision; do not leave multiple Dark Matter `.so` copies installed. The loader can skip a previously crashed binary until its file changes. This patch does not disable that crash protection.
+Remove the old `dark-matter.so` and install the newly built `diddy-client.so`; do not leave duplicate client `.so` copies installed. The loader can skip a previously crashed binary until its file changes. This patch does not disable that crash protection.
 
 The menu now retries startup lookups, waits for valid hand/head transforms and a font, and retries failed UI construction. It rebuilds after room-change callbacks or loss of its scene objects. On a fresh launch, hold **Y** to open it (or **B** if right-hand mode has been selected in that session).
 
@@ -74,7 +74,7 @@ No headset/runtime verification is implied by the host tests.
 
 Fix 4 incorrectly declared GC handles as `uint32_t`. The SDK's Unity 2023+/Unity 6 headers define `Il2CppGCHandle` as `void *`; returning or passing it as 32 bits can truncate it on arm64. Fix 5 uses that SDK type for storage and all three GC-handle functions. The host regression round-trips a handle above `UINT32_MAX`, including replacement and release. No SDK or loader crash protection has been changed.
 
-If the previous build crashes on entry, remove its `.so` from the headset's mods folder before launching again. Install only the new `dark-matter.so`, not all libraries from the artifact. Keep other mods removed temporarily when isolating a load crash. A successful Actions build confirms compilation, not on-device recovery; send the loader's final checkpoint lines if startup still fails.
+If the previous build crashes on entry, remove its `.so` from the headset's mods folder before launching again. Install only the new `diddy-client.so`, not all libraries from the artifact. Keep other mods removed temporarily when isolating a load crash. A successful Actions build confirms compilation, not on-device recovery; send the loader's final checkpoint lines if startup still fails.
 
 ## Audio Invoke Guard 6: remaining playback crash investigation
 
@@ -113,3 +113,11 @@ Older Photon Voice versions expose `RecordingEnabled`/`recordingEnabled` instead
 Missing state still fails closed: it is never assumed enabled. A false recording-enabled value or muted transmit state still prevents room playback. Legacy enablement is not proof of live transmission; the checkpoint explicitly logs that limitation. The source, prior clip and loop settings are still restored after completion/Stop/room change.
 
 The regression suite now exercises modern, legacy and direct recording-control variants plus live/legacy/missing recording-state reads. The Android build and host tests do not replace testing with another listener. If room audio still fails, send only the new `dark-matter voice` and `dark-matter sound:` lines. Uploaded full checkpoints remain private and are not committed.
+
+## Diddy Client rename
+
+The loader name and both the static and animated menu titles are now **Diddy Client**. The build output is **`diddy-client.so`**. The source folder remains `mods/dark-matter/`, and the `dark-matter voice` / `dark-matter sound:` diagnostic prefixes are intentionally retained so existing log instructions remain usable.
+
+Remove the old `dark-matter.so` (and any duplicate copies), then install only the new `diddy-client.so`. Do not load both clients: they register separate callbacks and can compete over the same voice recorder.
+
+This is a branding-only change. The user's latest report confirms local-only audio; room delivery is still unresolved. A new checkpoint after a playback attempt on Legacy Voice Fix 9 is needed to determine which stage now fails. The revision 8 checkpoint only establishes the earlier missing IsRecording binding.
