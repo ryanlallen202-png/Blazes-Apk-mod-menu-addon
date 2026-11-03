@@ -22,6 +22,7 @@
 #include <new>
 #include <cctype>
 #include "dr_mp3.h"
+#include "SoundBoard.h"
 #include <strings.h>
 #include <ctime>
 #include <string>
@@ -37,7 +38,7 @@ using namespace BNM::Structures::Unity;
 using BNM::IL2CPP::Il2CppObject;
 
 YEEPS_MOD("Diddy Client")
-#define DM_VERSION "Legacy Voice Fix 9"
+#define DM_VERSION "SoundBoard Port 10"
 
 // ---- small helpers ---------------------------------------------------------
 
@@ -163,7 +164,7 @@ static struct {
     Field<bool> voiceLoopField, voiceTransmitField, voiceRecordingField, voiceRecordingEnabledField;
     Method<void> asSetClip, asSetVolume, asSetSpatial, asSetLoop, asPlay, asStop;
     Method<bool> asIsPlaying;
-    BNM::MonoType *tAudioSource = nullptr;
+    BNM::MonoType *tAudioSource = nullptr, *tVoiceRecorder = nullptr, *tVoiceManager = nullptr;
     Method<Il2CppObject *> goFind;
     BNM::IL2CPP::Il2CppClass *floatClass = nullptr;
     BNM::IL2CPP::MethodInfo *rpcCreateItem = nullptr;     // only read for its parameter types
@@ -242,11 +243,12 @@ static bool Lookups() {
     // This uses the normal voice-chat stream; it does not send arbitrary room RPCs.
     {
         Class manager("", "VoiceChatManager", Image("Assembly-CSharp.dll"));
-        if (manager.IsValid()) G.voiceConnection = manager.GetField("voiceConnection");
+        if (manager.IsValid()) { G.voiceConnection = manager.GetField("voiceConnection"); G.tVoiceManager = manager.GetMonoType(); }
         Class connection("Photon.Voice.Unity", "VoiceConnection");
         if (connection.IsValid()) G.voicePrimaryRecorder = connection.GetMethod("get_PrimaryRecorder", 0);
         Class recorder("Photon.Voice.Unity", "Recorder");
         if (recorder.IsValid()) {
+            G.tVoiceRecorder = recorder.GetMonoType();
             G.voiceGetAudioClip = recorder.GetMethod("get_AudioClip", 0);
             G.voiceGetSourceType = recorder.GetMethod("get_SourceType", 0);
             G.voiceGetLoopAudioClip = recorder.GetMethod("get_LoopAudioClip", 0);
@@ -1920,25 +1922,60 @@ static void SpawnOnHandTick(const Buttons &in) {
 // The game's Photon Voice Recorder can use an AudioClip as its input source.
 // We temporarily swap its source for the selected clip, then restore the player's
 // previous microphone/source settings when the clip ends or Stop is pressed.
-static Il2CppObject *FindVoiceRecorder() {
-    if (!G.findAll.IsValid() || !G.voiceConnection.IsValid() || !G.voicePrimaryRecorder.IsValid()) return nullptr;
-    Class manager("", "VoiceChatManager", Image("Assembly-CSharp.dll"));
-    if (!manager.IsValid() || !manager.GetMonoType()) return nullptr;
-    auto *arr = (uint8_t *)G.findAll((Il2CppObject *)manager.GetMonoType());
-    size_t count = arr ? *(uintptr_t *)(arr + 0x18) : 0;
-    for (size_t i = 0; i < count; ++i) {
-        Il2CppObject *instance = ((Il2CppObject **)(arr + 0x20))[i];
-        if (!Alive(instance)) continue;
-        Il2CppObject *connection = G.voiceConnection[instance]();
-        if (!Alive(connection)) continue;
-        Il2CppObject *recorder = AudioCall<Il2CppObject *>(G.voicePrimaryRecorder, connection);
-        if (Alive(recorder)) return recorder;
-    }
-    return nullptr;
-}
 static bool AudioCallable(const MethodBase &method) {
     const auto *info = method.IsValid() ? method.GetInfo() : nullptr;
     return p_audioInvoke && p_audioUnbox && info && info->methodPointer && info->invoker_method;
+}
+static Il2CppObject *FindVoiceRecorder() {
+    // Ported from SoundBoard.h: try the named local voice object before scene fallback.
+    if (G.tVoiceRecorder && AudioCallable(G.goFind) && AudioCallable(G.goGetComponent)) {
+        try {
+            auto *host = AudioCall<Il2CppObject *>(G.goFind, nullptr,
+                CreateMonoString(diddy::soundboard::kVoiceObjectName));
+            auto *recorder = Alive(host) ? AudioCall<Il2CppObject *>(G.goGetComponent, host, G.tVoiceRecorder) : nullptr;
+            if (Alive(recorder)) {
+                ym::log("dark-matter sound: recorder found on PhotonVRVoice");
+                return recorder;
+            }
+        } catch (...) { ym::log("dark-matter sound: named voice lookup unavailable; trying manager"); }
+    }
+    try {
+    if (AudioCallable(G.findAll) && G.tVoiceManager && G.voiceConnection.IsValid() && AudioCallable(G.voicePrimaryRecorder)) {
+        auto *arr = (BNM::Structures::Mono::Array<Il2CppObject *> *)AudioCall<Il2CppObject *>(G.findAll, nullptr, G.tVoiceManager);
+        const size_t count = arr ? arr->GetCapacity() : 0;
+        for (size_t i = 0; i < count; ++i) {
+            auto *instance = arr->GetData()[i];
+            if (!Alive(instance)) continue;
+            auto *connection = G.voiceConnection[instance]();
+            if (!Alive(connection)) continue;
+            auto *recorder = AudioCall<Il2CppObject *>(G.voicePrimaryRecorder, connection);
+            if (Alive(recorder)) {
+                ym::log("dark-matter sound: recorder found through VoiceChatManager");
+                return recorder;
+            }
+        }
+    }
+    } catch (...) { ym::log("dark-matter sound: manager recorder lookup failed; trying scene fallback"); }
+    // Do not choose an arbitrary recorder if the scene contains multiple candidates.
+    if (!G.tVoiceRecorder) return nullptr;
+    Il2CppObject *result = nullptr;
+    if (AudioCallable(G.findScene)) result = AudioCall<Il2CppObject *>(G.findScene, nullptr, G.tVoiceRecorder);
+    else if (AudioCallable(G.findSceneByType)) result = AudioCall<Il2CppObject *>(G.findSceneByType, nullptr, G.tVoiceRecorder, 0);
+    auto *arr = (BNM::Structures::Mono::Array<Il2CppObject *> *)result;
+    Il2CppObject *candidate = nullptr;
+    const size_t count = arr ? arr->GetCapacity() : 0;
+    for (size_t i = 0; i < count; ++i) {
+        auto *recorder = arr->GetData()[i];
+        if (!Alive(recorder)) continue;
+        if (AudioCallable(G.behaviourGetEnabled) && !AudioCall<bool>(G.behaviourGetEnabled, recorder)) continue;
+        if (candidate && candidate != recorder) {
+            ym::log("dark-matter sound: ambiguous scene recorders; leaving voice input unchanged");
+            return nullptr;
+        }
+        candidate = recorder;
+    }
+    ym::log("dark-matter sound: unique scene recorder=%d", candidate != nullptr);
+    return candidate;
 }
 template<class T>
 static T ReadRecorderValue(const Method<T> &getter, Field<T> field, Il2CppObject *recorder) {
@@ -2056,34 +2093,8 @@ static bool StartVoicePlayback(Il2CppObject *clip, double duration) {
 static constexpr size_t kMaxSoundSamples = 8u * 1024u * 1024u;
 static constexpr size_t kMaxSoundFileBytes = 2 * kMaxSoundSamples + 1024 * 1024;
 static constexpr size_t kMaxSoundFiles = 256;
-struct WavInfo { int channels = 0, sampleRate = 0; size_t dataOffset = 0, dataBytes = 0; };
-static uint16_t Read16(const std::vector<uint8_t> &b, size_t p) {
-    return (uint16_t)b[p] | ((uint16_t)b[p + 1] << 8);
-}
-static uint32_t Read32(const std::vector<uint8_t> &b, size_t p) {
-    return (uint32_t)b[p] | ((uint32_t)b[p + 1] << 8) | ((uint32_t)b[p + 2] << 16) | ((uint32_t)b[p + 3] << 24);
-}
-static bool ParseWav(const std::vector<uint8_t> &b, WavInfo &w) {
-    if (b.size() < 44 || memcmp(b.data(), "RIFF", 4) || memcmp(b.data() + 8, "WAVE", 4)) return false;
-    bool fmt = false, data = false;
-    for (size_t p = 12; p + 8 <= b.size();) {
-        uint32_t n = Read32(b, p + 4);
-        size_t body = p + 8;
-        if (body + n > b.size()) return false;
-        if (!memcmp(b.data() + p, "fmt ", 4)) {
-            if (n < 16 || Read16(b, body) != 1 || Read16(b, body + 14) != 16) return false;
-            w.channels = Read16(b, body + 2);
-            w.sampleRate = (int)Read32(b, body + 4);
-            fmt = true;
-        } else if (!memcmp(b.data() + p, "data", 4)) {
-            w.dataOffset = body; w.dataBytes = n; data = true;
-        }
-        p = body + n + (n & 1);
-    }
-    return fmt && data && (w.channels == 1 || w.channels == 2) &&
-           w.sampleRate >= 8000 && w.sampleRate <= 48000 &&
-           w.dataBytes >= (size_t)w.channels * 2 && w.dataBytes % ((size_t)w.channels * 2) == 0;
-}
+using diddy::soundboard::WavInfo;
+using diddy::soundboard::DecodeWav;
 static std::string PersistentPath() {
     if (!G.applicationPersistentPath.IsValid()) return "";
     auto *v = (Il2CppObject *)G.applicationPersistentPath();
@@ -2124,7 +2135,10 @@ static void ScanSounds() {
         directories.push_back(root + "/sounds");
     }
     std::string persistent = PersistentPath();
-    if (!persistent.empty()) directories.push_back(persistent + "/sounds");
+    if (!persistent.empty()) {
+        directories.push_back(persistent + "/sounds");
+        directories.push_back(persistent + "/HSounds"); // SoundBoard.h folder compatibility
+    }
     if (directories.empty()) { Notify("Soundboard path unavailable"); return; }
 
     g_soundFiles.clear();
@@ -2264,22 +2278,11 @@ static void PlaySound() {
                 if (!in.read((char *)bytes.data(), (std::streamsize)bytes.size())) bytes.clear();
             }
             WavInfo w;
-            if (in || !bytes.empty()) {
-                if (ParseWav(bytes, w)) {
-                    size_t frameBytes = (size_t)w.channels * 2;
-                    frames = w.dataBytes / frameBytes;
-                    if (frames && frames <= (size_t)INT_MAX &&
-                        frames <= kMaxSoundSamples / (size_t)w.channels) {
-                        channels = w.channels;
-                        rate = w.sampleRate;
-                        pcm.resize(frames * (size_t)channels);
-                        for (size_t n = 0; n < pcm.size(); ++n) {
-                            int16_t v = (int16_t)Read16(bytes, w.dataOffset + n * 2);
-                            pcm[n] = (float)v / 32768.0f;
-                        }
-                        ok = true;
-                    }
-                }
+            if (DecodeWav(bytes, w, pcm, kMaxSoundSamples)) {
+                channels = w.channels;
+                rate = w.sampleRate;
+                frames = pcm.size() / (size_t)channels;
+                ok = frames > 0 && frames <= (size_t)INT_MAX;
             }
         }
         std::lock_guard<std::mutex> lock(g_soundMutex);

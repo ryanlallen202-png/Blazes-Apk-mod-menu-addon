@@ -26,18 +26,22 @@ class SoundboardTests(unittest.TestCase):
         compiler = shutil.which("c++")
         if not compiler:
             self.skipTest("A host C++ compiler is required")
-        source = SOURCE.read_text()
-        parser = source[source.index("struct WavInfo"):source.index("static std::string PersistentPath")]
+        parser = '#include "SoundBoard.h"\nusing namespace diddy::soundboard;\n'
 
-        def wav(channels=1, rate=44100, data=b"\0\0" * 8, bits=16):
-            fmt = struct.pack("<HHIIHH", 1, channels, rate, rate * channels * 2, channels * 2, bits)
+        def wav(channels=1, rate=44100, data=b"\0\0" * 8, bits=16, audio_format=1):
+            width = bits // 8
+            fmt = struct.pack("<HHIIHH", audio_format, channels, rate, rate * channels * width, channels * width, bits)
             body = b"WAVEfmt " + struct.pack("<I", len(fmt)) + fmt + b"data" + struct.pack("<I", len(data)) + data
+            if len(data) & 1:
+                body += b"\0"
             return b"RIFF" + struct.pack("<I", len(body)) + body
 
         cases = [(wav(), True), (wav(channels=2), True), (wav(rate=8000), True),
                  (wav(rate=48000), True), (wav(channels=3), False),
                  (wav(rate=7999), False), (wav(rate=48001), False),
-                 (wav(bits=8), False), (wav(data=b""), False),
+                 (wav(bits=8), True), (wav(bits=24), False),
+                 (wav(bits=32, audio_format=3, data=struct.pack("<ff", 0.25, -0.5)), True),
+                 (wav(bits=32), False), (wav(bits=8, data=b"abc"), True), (wav(data=b""), False),
                  (wav(channels=2, data=b"\0\0"), False),
                  (wav()[:-1], False), (b"not a WAV", False)]
         checks = []
@@ -49,8 +53,50 @@ class SoundboardTests(unittest.TestCase):
             cpp = pathlib.Path(directory) / "wav_test.cpp"
             exe = pathlib.Path(directory) / "wav_test"
             cpp.write_text(program)
-            subprocess.run([compiler, "-std=c++20", "-Wall", "-Wextra", "-Werror", str(cpp), "-o", str(exe)], check=True)
+            subprocess.run([compiler, "-std=c++20", "-Wall", "-Wextra", "-Werror", "-I" + str(SOURCE.parent), str(cpp), "-o", str(exe)], check=True)
             subprocess.run([str(exe)], check=True)
+
+    def test_adapted_header_sample_decoding(self):
+        compiler = shutil.which("c++")
+        if not compiler:
+            self.skipTest("A host C++ compiler is required")
+
+        def wav(data, bits, audio_format):
+            fmt = struct.pack("<HHIIHH", audio_format, 1, 48000, 48000 * (bits // 8), bits // 8, bits)
+            body = b"WAVEfmt " + struct.pack("<I", 16) + fmt + b"data" + struct.pack("<I", len(data)) + data
+            if len(data) & 1:
+                body += b"\0"
+            return b"RIFF" + struct.pack("<I", len(body)) + body
+
+        cases = [(wav(bytes([0, 128, 255]), 8, 1), [-1.0, 0.0, 127 / 128]),
+                 (wav(struct.pack("<hhh", -32768, 0, 32767), 16, 1), [-1.0, 0.0, 32767 / 32768]),
+                 (wav(struct.pack("<fff", -2.0, 0.25, 2.0), 32, 3), [-1.0, 0.25, 1.0])]
+        checks = []
+        for payload, expected in cases:
+            data = ",".join(map(str, payload))
+            values = ",".join(str(v) + "f" for v in expected)
+            checks.append("{ std::vector<uint8_t> bytes = {" + data + "}; WavInfo info; std::vector<float> samples; "
+                          "assert(DecodeWav(bytes, info, samples, 3)); "
+                          "std::vector<float> expected = {" + values + "}; "
+                          "assert(samples.size() == expected.size()); "
+                          "for (size_t i=0; i<samples.size(); ++i) assert(std::fabs(samples[i]-expected[i]) < 0.00001f); "
+                          "assert(!DecodeWav(bytes, info, samples, 2)); assert(samples.empty()); }")
+        for value in (float("nan"), float("inf"), float("-inf")):
+            data = ",".join(map(str, wav(struct.pack("<f", value), 32, 3)))
+            checks.append("{ std::vector<uint8_t> bytes = {" + data + "}; WavInfo info; std::vector<float> samples; "
+                          "assert(!DecodeWav(bytes, info, samples, 3)); assert(samples.empty()); }")
+        program = '#include "SoundBoard.h"\n#include <cassert>\nusing namespace diddy::soundboard;\nint main() {\n' + "\n".join(checks) + "\n}\n"
+        with tempfile.TemporaryDirectory() as directory:
+            cpp = pathlib.Path(directory) / "header_decode_test.cpp"
+            exe = pathlib.Path(directory) / "header_decode_test"
+            cpp.write_text(program)
+            subprocess.run([compiler, "-std=c++20", "-Wall", "-Wextra", "-Werror", "-I" + str(SOURCE.parent), str(cpp), "-o", str(exe)], check=True)
+            subprocess.run([str(exe)], check=True)
+        source = SOURCE.read_text()
+        self.assertIn('diddy::soundboard::kVoiceObjectName', source)
+        self.assertIn('persistent + "/HSounds"', source)
+        self.assertIn('DecodeWav(bytes, w, pcm, kMaxSoundSamples)', source)
+        self.assertNotIn('lobbyHearBoost', source)
 
     def test_runtime_audio_marshalling(self):
         compiler = shutil.which("c++")
@@ -142,7 +188,7 @@ int main() {
             cpp = pathlib.Path(directory) / "invoke_test.cpp"
             exe = pathlib.Path(directory) / "invoke_test"
             cpp.write_text(program)
-            subprocess.run([compiler, "-std=c++20", "-Wall", "-Wextra", "-Werror", str(cpp), "-o", str(exe)], check=True)
+            subprocess.run([compiler, "-std=c++20", "-Wall", "-Wextra", "-Werror", "-I" + str(SOURCE.parent), str(cpp), "-o", str(exe)], check=True)
             subprocess.run([str(exe)], check=True)
 
     def test_gc_handle_replacement(self):
@@ -190,7 +236,7 @@ int main() {
             cpp = pathlib.Path(directory) / "handle_test.cpp"
             exe = pathlib.Path(directory) / "handle_test"
             cpp.write_text(program)
-            subprocess.run([compiler, "-std=c++20", "-Wall", "-Wextra", "-Werror", str(cpp), "-o", str(exe)], check=True)
+            subprocess.run([compiler, "-std=c++20", "-Wall", "-Wextra", "-Werror", "-I" + str(SOURCE.parent), str(cpp), "-o", str(exe)], check=True)
             subprocess.run([str(exe)], check=True)
 
     def test_startup_retries(self):
@@ -338,7 +384,7 @@ int main() {
             cpp = pathlib.Path(directory) / "recording_test.cpp"
             exe = pathlib.Path(directory) / "recording_test"
             cpp.write_text(program)
-            subprocess.run([compiler, "-std=c++20", "-Wall", "-Wextra", "-Werror", str(cpp), "-o", str(exe)], check=True)
+            subprocess.run([compiler, "-std=c++20", "-Wall", "-Wextra", "-Werror", "-I" + str(SOURCE.parent), str(cpp), "-o", str(exe)], check=True)
             subprocess.run([str(exe)], check=True)
         self.assertIn('voice unavailable: %s', source)
         self.assertIn('ReadRecorderValue(G.voiceGetTransmitEnabled, G.voiceTransmitField, recorder)', source)
@@ -391,7 +437,7 @@ int main() {
             cpp = pathlib.Path(directory) / "legacy_state_test.cpp"
             exe = pathlib.Path(directory) / "legacy_state_test"
             cpp.write_text(program)
-            subprocess.run([compiler, "-std=c++20", "-Wall", "-Wextra", "-Werror", str(cpp), "-o", str(exe)], check=True)
+            subprocess.run([compiler, "-std=c++20", "-Wall", "-Wextra", "-Werror", "-I" + str(SOURCE.parent), str(cpp), "-o", str(exe)], check=True)
             subprocess.run([str(exe)], check=True)
         self.assertIn('get_RecordingEnabled', source)
         self.assertIn('set_RecordingEnabled', source)

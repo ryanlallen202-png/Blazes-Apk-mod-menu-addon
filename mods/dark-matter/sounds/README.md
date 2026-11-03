@@ -4,7 +4,7 @@ Put your own clips on the headset in:
 
 `Android/data/com.TrassGames.Yeeps/files/mods/sounds/`
 
-Files directly in `mods/` or in `Android/data/com.TrassGames.Yeeps/files/sounds/` are also scanned. Subfolders are not scanned.
+Files directly in `mods/`, `Android/data/com.TrassGames.Yeeps/files/sounds/`, or `Android/data/com.TrassGames.Yeeps/files/HSounds/` are also scanned. Subfolders are not scanned.
 
 1. Open **Soundboard → Scan Sounds Folder**.
 2. Open **MP3 Files** or **WAV Files**.
@@ -14,7 +14,7 @@ Files directly in `mods/` or in `Android/data/com.TrassGames.Yeeps/files/sounds/
 ## Formats and limits
 
 - MP3: mono/stereo, 8–192 kHz.
-- WAV: PCM format 1, 16-bit, mono/stereo, 8–48 kHz; data must contain complete frames.
+- WAV: PCM format 1 (8-bit unsigned or 16-bit signed), or IEEE float format 3 (32-bit), mono/stereo, 8–48 kHz. Data must contain complete frames. Non-finite floats are rejected; finite float samples are clamped to normal amplitude.
 - Decoded audio: at most 8,388,608 interleaved samples (about 95 seconds of stereo at 44.1 kHz). Short clips are recommended.
 - Input files larger than 17 MiB are rejected before decoding. Only regular files are accepted (not directories, symlinks, or named pipes).
 - The menu lists at most 256 clips across the scanned folders. Keep the folder small for predictable navigation.
@@ -38,7 +38,7 @@ build/test-venv/bin/pip install lameenc==1.9.0
 build/test-venv/bin/python mods/dark-matter/tests/test_soundboard.py
 ```
 
-All eleven tests passed in the development sandbox, including runtime-call argument marshalling, GC-handle replacement, exact audio overload selection, recorder ordering, and startup retry guards. They do not run Unity or Photon Voice. Android compilation requires the NDK; room audio and microphone restoration must be tested on a headset with another consenting listener.
+All thirteen tests passed in the development sandbox, including runtime-call argument marshalling, GC-handle replacement, exact audio overload selection, recorder ordering, and startup retry guards. They do not run Unity or Photon Voice. Android compilation requires the NDK; room audio and microphone restoration must be tested on a headset with another consenting listener.
 
 ## Playback crash diagnostics
 
@@ -121,3 +121,17 @@ The loader name and both the static and animated menu titles are now **Diddy Cli
 Remove the old `dark-matter.so` (and any duplicate copies), then install only the new `diddy-client.so`. Do not load both clients: they register separate callbacks and can compete over the same voice recorder.
 
 This is a branding-only change. The user's latest report confirms local-only audio; room delivery is still unresolved. A new checkpoint after a playback attempt on Legacy Voice Fix 9 is needed to determine which stage now fails. The revision 8 checkpoint only establishes the earlier missing IsRecording binding.
+
+## SoundBoard Port 10: user-supplied header integration
+
+`src/SoundBoard.h` is an SDK-compatible adaptation of the supplied header, not an unmodified copy. The supplied file includes generated Unity/Photon wrappers, menu settings and resolver headers that are not present in this repository. The adaptation is used by the actual menu build.
+
+Ported behavior:
+
+- Direct WAV decoding for PCM 8/16-bit and IEEE float32, with complete-frame validation, RIFF bounds checks, decoded-sample caps and finite-float validation. Tests compile and exercise the actual new header.
+- Recorder discovery on the named **PhotonVRVoice** object, then the game's VoiceChatManager primary recorder, then a unique active scene Recorder. Ambiguous scene recorders are rejected rather than choosing an arbitrary component. Discovery runs only for a playback request, not every frame.
+- Read support for the supplied header's `HSounds` folder, in addition to existing locations.
+
+Existing MP3 decoding, modern/legacy recording APIs, cooldowns, GC roots, staged local playback and saved-input restoration are retained. The header's external-wrapper dependencies, file-request/OGG loader, forced unmute, raw configuration-field writes, per-frame scene searches and local volume/distance booster are not imported. The “Hear All” booster changes local reception, not transmission to other players. This port does not boost voice levels or override mute settings.
+
+Install only the new **diddy-client.so** and confirm **SoundBoard Port 10** in the menu. Room delivery is still unverified until tested with another listener; the source adaptation alone cannot prove it. If it remains local-only, provide new `dark-matter voice` and `dark-matter sound:` checkpoint lines, including the recorder-discovery result.
