@@ -517,7 +517,7 @@ static Item g_items[] = {
 
     {SOUND, "Exit Soundboard", OPEN, MAIN},
     {SOUND, "Scan Sounds Folder", ACTION, MAIN, nullptr, ScanSounds},
-static sound controls    {SOUND, "Stop Sound", ACTION, MAIN, nullptr, StopSound},
+    {SOUND, "Stop Sound", ACTION, MAIN, nullptr, StopSound},
     {SOUND, "Volume Up", ACTION, MAIN, nullptr, SoundVolumeUp},
     {SOUND, "Volume Down", ACTION, MAIN, nullptr, SoundVolumeDown},
 };
@@ -904,15 +904,11 @@ static void Press(Item *it) {
     case ACTION:
         if (it->soundIndex >= 0) {
             g_soundIndex = (size_t)it->soundIndex;
-            if (g_time < g_nextSoundPlay || g_soundActive)
-                Notify("Soundboard is busy; wait for the clip to finish");
-            else {
-                try { PlaySound(); }
-                catch (...) {
-                    try { StopSound(); } catch (...) {}
-                    Notify("Soundboard error; microphone restored");
-                    ym::log("dark-matter: soundboard playback exception");
-                }
+            try { PlaySound(); }
+            catch (...) {
+                try { StopSound(); } catch (...) {}
+                Notify("Soundboard error; microphone restored");
+                ym::log("dark-matter: soundboard playback exception");
             }
         } else if (it->fn) it->fn();
         break;
