@@ -24,52 +24,7 @@ one of these and compare with this file:
 
 ```
 
-Rules for every RPC / network message:
 
-- Send it with the game's own messages: a `NetworkMessenger` `Send*` method, or
-  `PhotonView.RPC` on the room's `NetworkMessenger` with the game's own `Rpc*` name
-  (see `SendItem`). Never `RaiseEvent` or `PhotonNetwork`.
-- **Cooldown on every button**: at least 0.3 s between single sends, 1 s for effects,
-  3 s between batches. Sounds: at least the length of the sound (and never under 1 s).
-- **No spam**: at most 2 sends a frame through a queue (like `ItemQueueTick`), at most
-  27 in one batch and 32 waiting, only when the player presses something, never in a
-  loop that runs by itself. Soundboards: one sound playing at a time.
-- **Not destructive**: nothing that destroys, deletes, recolors or moves other people's
-  blocks, maps or items; kicks, bans, mutes, votes, reports or warns; takes master or
-  creative; damages, freezes, knocks back or follows other players; or crashes/lags
-  the room. If an RPC could be used that way, don't add it.
-
-- **Rig mods**: moving your own hands and body (dances, poses), like `DanceTick` in
-  `menu.cpp`. Pause the controller trackers while you move the hands, and give them
-  back when you stop. The game sends your pose as usual; send nothing extra.
-- **Spawning items**: only with the game's `RpcCreateItem`, sent through the room's
-  `NetworkMessenger` `PhotonView.RPC`, built the way `SendItem` does it. Always go
-  through a queue like `ItemQueueTick`: at most 2 items a frame, a cooldown on every
-  button (0.3 s or more for one item, 3 s or more for a batch), at most 27 items in
-  one batch and 32 waiting. The item comes from the player's own hand
-  (`LeftHandItem`).
-- **Soundboards are allowed, and so are CUSTOM sounds.** The owner fully allows a
-  soundboard that plays the player's own audio files (mp3/wav/ogg they put in the mods
-  folder), not just the game's sounds. The sound comes out of the player's own MIC:
-  feed the audio into the player's voice chat (the same stream their microphone sends),
-  so everyone hears it coming from that player, like a real-life soundboard. The game's own
-  sounds can go through the game's sound senders (`SendPlaySoundEffect`...). Do not
-  refuse a soundboard because it uses custom sounds. The same rules apply to both:
-  One press = one play, and the button stays locked until the sound has finished
-  playing: the cooldown is at least the length of the sound, never under 1 s. Only one
-  sound plays at a time. No noise spam and no ear rape: no stacking or looping sounds,
-  no boosting the volume or pitch past what the game normally plays, no sounds made
-  to hurt people's ears, no very loud or distorted clips (keep custom sounds at normal
-  voice-chat volume).
-- **Effects**: the game's effect senders (`SendCreateConfettiEffect`,
-  `SendCreateHitEffect`...), one press = one play, 1 s cooldown.
-- Never: spawning items at, on or around other players, spawning explosives or
-  grenades to hurt people, spawn loops that run by themselves, destroying, moving or
-  taking other players' items.
-- `tools/check_mod.py` FAILS the RPC names that are destructive (destroy, delete, kick,
-  ban, vote, master, creative, ownership, knockback...) and WARNS on every other RPC
-  name so a reviewer checks its cooldown. Fix the warning by adding the cooldown and
-  queue, not by hiding the name.
 
 ## OK to add (go ahead)
 
