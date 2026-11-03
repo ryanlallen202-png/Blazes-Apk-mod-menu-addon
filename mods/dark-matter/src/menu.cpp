@@ -371,7 +371,7 @@ static Buttons ReadButtons() {
 
 // Feature switches. Every feature only changes your own game.
 static bool f_velocityFly, f_ironMan, f_tpGun, f_noclip, f_speedBoost, f_noGravity;
-static bool f_itemGun, f_spawnOnHand, f_car;
+static bool f_itemGun, f_spawnOnHand, f_car, f_launchGun, f_megaJump, f_flingGun;
 static char g_itemKey[64] = "";                // the last item you held (learned on grab)
 struct PendingItem { Vector3 pos, vel; };
 static std::vector<PendingItem> g_itemQueue;
@@ -408,6 +408,9 @@ static void ApplyGravity();
 static void DancePicked();
 static void ArmDupe9();
 static void ArmDupe27();
+static void ArmDupe27Wide();
+static void SpawnItemCircle();
+static void SpawnItemRain();
 static bool LeftHandItem();
 static void ScanSounds();
 static void PlaySound();
@@ -458,6 +461,8 @@ static Item g_items[] = {
     {MOVEMENT, "Dash", TOGGLE, MAIN, &f_dash},
     {MOVEMENT, "Grapple Hook", TOGGLE, MAIN, &f_grapple},
     {MOVEMENT, "Ground Pound", TOGGLE, MAIN, &f_groundPound},
+    {MOVEMENT, "Mega Jump", TOGGLE, MAIN, &f_megaJump},
+    {MOVEMENT, "Fling Gun", TOGGLE, MAIN, &f_flingGun},
 
     {RIG, "Exit Rig Mods", OPEN, MAIN},
     {RIG, "Wave", TOGGLE, MAIN, &g_danceSel[0], DancePicked},
@@ -481,6 +486,10 @@ static Item g_items[] = {
     {ITEMS, "Spawn Item Gun", TOGGLE, MAIN, &f_itemGun},
     {ITEMS, "Duplicate Items (3x3)", ACTION, MAIN, nullptr, ArmDupe9},
     {ITEMS, "Duplicate Items (3x3x3)", ACTION, MAIN, nullptr, ArmDupe27},
+    {ITEMS, "Duplicate Items (9x3)", ACTION, MAIN, nullptr, ArmDupe27Wide},
+    {ITEMS, "Item Circle (27)", ACTION, MAIN, nullptr, SpawnItemCircle},
+    {ITEMS, "Item Rain (27)", ACTION, MAIN, nullptr, SpawnItemRain},
+    {ITEMS, "Launch Items Gun", TOGGLE, MAIN, &f_launchGun},
     {ITEMS, "Spawn On Hand", TOGGLE, MAIN, &f_spawnOnHand},
 
     {SETTINGS, "Exit Settings", OPEN, MAIN},
@@ -1185,7 +1194,7 @@ static void NoclipTick(const Buttons &in) {
 static Ref g_gunLine, g_gunLineGo, g_gunBall;
 static bool g_gunTrigger = false;
 static void TeleportGunTick(const Buttons &in) {
-    bool aiming = (f_tpGun || f_itemGun) && in.rgrip;
+    bool aiming = (f_tpGun || f_itemGun || f_launchGun) && in.rgrip;
     if (!aiming) {
         Show(g_gunLineGo, false);
         Show(g_gunBall, false);
@@ -1223,10 +1232,11 @@ static void TeleportGunTick(const Buttons &in) {
     G.lrSetPosition[g_gunLine.get()](1, end);
     SetColor(g_gunBall.get(), in.rtrig ? T().buttonOn : T().bgB);
     if (in.rtrig && !g_gunTrigger && found) {
-        if (f_itemGun) {                                  // Spawn Item Gun: an item at that spot
+        if (f_launchGun || f_itemGun) {                   // item spawn at the aim point
             if (g_time >= g_nextItem && LeftHandItem()) {
                 g_nextItem = g_time + 0.5;
-                g_itemQueue.push_back({end + Vector3(0, 0.3f, 0), Vector3(0, 0, 0)});
+                Vector3 launch = f_launchGun ? dir * 9.0f : Vector3(0, 0, 0);
+                g_itemQueue.push_back({end + Vector3(0, 0.3f, 0), launch});
             }
         } else TeleportPlayer(end + Vector3(0, 1.0f, 0));
     }
@@ -1501,6 +1511,39 @@ static bool LeftHandItem() {
 }
 static void ArmDupe9() { if (LeftHandItem()) SpawnGrid(9); }
 static void ArmDupe27() { if (LeftHandItem()) SpawnGrid(27); }
+static void ArmDupe27Wide() {
+    if (!LeftHandItem()) return;
+    Il2CppObject *head = g_head.get(); if (!head) return;
+    Vector3 f = Flat(G.trGetForward[head]()), r = Cross(Vector3(0, 1, 0), f);
+    Vector3 base = G.trGetPosition[head]() + f * 1.4f + Vector3(0, -0.35f, 0);
+    std::vector<PendingItem> list;
+    for (int z = 0; z < 3; ++z)
+        for (int x = 0; x < 9; ++x)
+            list.push_back({base + r * ((x - 4) * 0.32f) + f * (z * 0.42f), Vector3(0, 0, 0)});
+    QueueItems(list);
+}
+static void SpawnItemCircle() {
+    if (!LeftHandItem()) return;
+    Il2CppObject *head = g_head.get(); if (!head) return;
+    Vector3 hp = G.trGetPosition[head];
+    std::vector<PendingItem> list;
+    for (int i = 0; i < 27; ++i) {
+        float a = (float)i * 6.2831853f / 27.0f;
+        list.push_back({hp + Vector3(cosf(a) * 2.0f, 0.25f + (i % 3) * 0.35f, sinf(a) * 2.0f), Vector3(0, 0, 0)});
+    }
+    QueueItems(list);
+}
+static void SpawnItemRain() {
+    if (!LeftHandItem()) return;
+    Il2CppObject *head = g_head.get(); if (!head) return;
+    Vector3 hp = G.trGetPosition[head];
+    std::vector<PendingItem> list;
+    for (int i = 0; i < 27; ++i) {
+        float x = (Rand01() - 0.5f) * 5.0f, z = (Rand01() - 0.5f) * 5.0f;
+        list.push_back({hp + Vector3(x, 3.0f + (i % 3) * 0.4f, z), Vector3(0, -2.5f, 0)});
+    }
+    QueueItems(list);
+}
 
 // Spawn On Hand: each right-trigger press (grip open) spawns the item at your hand.
 static bool g_onHandTrigger = false;
@@ -1562,8 +1605,8 @@ static void OnRoomChange() {
     g_built = false; g_menuShown = false; g_touching = -2; g_haveSpot = false;
 }
 
-static bool g_dashWasDown = false, g_poundWasDown = false;
-static double g_nextDash = 0;
+static bool g_dashWasDown = false, g_poundWasDown = false, g_flingWasDown = false;
+static double g_nextDash = 0, g_nextMegaJump = 0;
 static void MovementExtrasTick(const Buttons &in) {
     Il2CppObject *head = g_head.get(), *hand = g_rightHand.get(); if (!head) return;
     Vector3 v;
@@ -1571,9 +1614,13 @@ static void MovementExtrasTick(const Buttons &in) {
     if (f_superFly && in.a) SetVel(G.trGetForward[head]() * 22.0f);
     if (f_rocketBoots && in.ltrig && in.rtrig && GetVel(v)) SetVel(Vector3(v.x, fmaxf(v.y, 14.0f), v.z));
     bool dashPress = in.x && !g_dashWasDown, poundPress = in.b && !g_poundWasDown;
-    g_dashWasDown = in.x; g_poundWasDown = in.b;
+    bool flingPress = in.a && !g_flingWasDown;
+    g_dashWasDown = in.x; g_poundWasDown = in.b; g_flingWasDown = in.a;
     if (f_dash && dashPress && g_time >= g_nextDash) { Vector3 f = Flat(G.trGetForward[head]()); SetVel(f * 18.0f + Vector3(0, 3.0f, 0)); g_nextDash = g_time + 0.65; }
-    if (f_groundPound && poundPress && !g_menuShown && GetVel(v)) SetVel(Vector3(v.x, -18.0f, v.z));
+    if (f_megaJump && poundPress && !g_menuShown && g_time >= g_nextMegaJump && GetVel(v)) {
+        SetVel(Vector3(v.x, 19.0f, v.z)); g_nextMegaJump = g_time + 0.8;
+    } else if (f_groundPound && poundPress && !g_menuShown && GetVel(v)) SetVel(Vector3(v.x, -18.0f, v.z));
+    if (f_flingGun && flingPress && !g_menuShown && hand) SetVel(G.trGetForward[hand]() * 22.0f);
     if (f_grapple && in.lgrip && in.rtrig && hand && G.raycast.IsValid()) {
         Vector3 start = G.trGetPosition[hand](), dir = G.trGetForward[hand]();
         BNM::Structures::Unity::RaycastHit hit{};
