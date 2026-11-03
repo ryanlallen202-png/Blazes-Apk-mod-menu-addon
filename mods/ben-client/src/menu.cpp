@@ -2419,7 +2419,11 @@ static void StartLoad(int song, bool playAfter) {
     const bool isMp3 = path.size() >= 4 && strcasecmp(path.c_str() + path.size() - 4, ".mp3") == 0;
     if (!(isMp3 ? OpenMp3(path, L, &err) : OpenWav(path, L, &err))) { Notify("%s", err); return; }
     if (L.frames == 0) { if (L.f) fclose(L.f); if (L.mp3) { drmp3_uninit(L.mp3); delete L.mp3; } Notify("That song is empty"); return; }
-    if ((double)L.frames / L.rate > kMaxSeconds) { fclose(L.f); Notify("Song too long (max about 4 minutes)"); return; }
+    if ((double)L.frames / L.rate > kMaxSeconds) {
+        if (L.f) fclose(L.f);
+        if (L.mp3) { drmp3_uninit(L.mp3); delete L.mp3; }
+        Notify("Song too long (max about 4 minutes)"); return;
+    }
     L.step = (double)L.rate / kVoiceRate;
     L.outFrames = (uint64_t)((double)L.frames / L.step);
     if (L.outFrames == 0) L.outFrames = 1;
@@ -2429,7 +2433,12 @@ static void StartLoad(int song, bool playAfter) {
     g_clipMixed = false;
     Il2CppObject *clip = G.audioClipCreate(CreateMonoString(SongTitle(song).c_str()), (int)L.outFrames, 1, (int)kVoiceRate, false);
     Il2CppObject *chunk = (Il2CppObject *)G.arrayNew(G.floatClass, kChunkFrames);
-    if (!clip || !chunk) { fclose(L.f); Notify("Not enough memory for that song"); return; }
+    if (!clip || !chunk) {
+        if (L.f) fclose(L.f);
+        if (L.mp3) { drmp3_uninit(L.mp3); delete L.mp3; }
+        if (clip) G.destroy(clip);
+        Notify("Not enough memory for that song"); return;
+    }
     g_clip.set(clip);
     g_chunk.set(chunk);
     size_t srcMax = (size_t)(kChunkFrames * L.step) + 4;          // file frames one slice can need
