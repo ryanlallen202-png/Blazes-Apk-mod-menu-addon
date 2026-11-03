@@ -1925,8 +1925,8 @@ static bool OpenWav(const std::string &path, Loader &L, const char **err) {
     return true;
 }
 
-// minimp3's file API reads the compressed stream into a bounded buffer and exposes
-// decoded PCM frame-by-frame. A 32 MiB compressed-file cap keeps headset memory bounded.
+// Read the compressed MP3 into a capped buffer, then decode PCM frame-by-frame.
+// The 32 MiB compressed-file cap keeps headset memory bounded.
 static bool OpenMp3(const std::string &path, Loader &L, const char **err) {
     FILE *f = fopen(path.c_str(), "rb");
     if (!f) { *err = "Couldn't open that MP3 file"; return false; }
@@ -2177,7 +2177,8 @@ static void PlayLoaded() {
     if (G.asSetSpatial.IsValid()) G.asSetSpatial[src](0.0f);          // 2D: heard in your head, wherever you walk
     if (G.asSetLoop.IsValid()) G.asSetLoop[src](f_soundLoop);
     G.asPlay[src]();
-    g_soundAvailableAt = g_time + (g_clipLen > 1.0 ? g_clipLen : 1.0);
+    const double soundLock = g_clipLen + 0.5; // include the voice-recorder hand-back margin
+    g_soundAvailableAt = g_time + (soundLock > 1.0 ? soundLock : 1.0);
     bool room = MicStart();
     Notify(room ? "Playing %.30s (room hears it)" : f_soundMic ? "Playing %.30s (voice chat not found, only you)" : "Playing %.30s",
            SongTitle(g_clipSong).c_str());
