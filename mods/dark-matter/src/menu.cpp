@@ -749,7 +749,7 @@ static void BuildMenu() {
     g_titleBar.set(Part(bt, T().buttonOn, Vector3(0, kTitleY, -0.002f), Vector3(kBoardW - 0.16f, 0.055f, 0.009f)));
     g_next.set(Part(bt, T().button, Vector3(kSideX, kSideY, 0), Vector3(kSideW, kSideH, 0.009f)));
 
-    if (Il2CppObject *canvas = Canvas(bt, Vector3(0, 0, -0.0105f), kBoardW + 0.04f, kBoardH + 0.12f)) {
+    if (Il2CppObject *canvas = Canvas(bt, Vector3(0, 0, -0.0105f), kBoardW + 0.12f, kBoardH + 0.12f)) {
         Il2CppObject *ct = Tr(canvas);
         Label(ct, "DARK MATTER", Vector3(0, kTitleY, 0), kBoardW - 0.16f, 0.055f, 30, &g_title);
         for (int r = 0; r < kRows; r++)
