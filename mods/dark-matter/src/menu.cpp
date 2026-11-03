@@ -1657,7 +1657,7 @@ static void OnRoomChange() {
         G.maxJumpSpeed[g_jumpPowerPlayer.get()] = g_jumpPowerOldMax;
         G.jumpMultiplier[g_jumpPowerPlayer.get()] = g_jumpPowerOldMultiplier;
     }
-    g_jumpPowerLevel = 0; g_jumpPowerPlayer = nullptr;
+    g_jumpPowerLevel = 0; g_jumpPowerPlayer.clear();
     for (Ref *r : {&g_player, &g_rigidbody, &g_leftHand, &g_rightHand, &g_head}) r->clear();
     g_built = false; g_menuShown = false; g_touching = -2; g_haveSpot = false;
 }
