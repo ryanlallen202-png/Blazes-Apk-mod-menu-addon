@@ -2,7 +2,7 @@
 
 Community mods for **Yeeps (blaze build)**. The game ships only BNM (ByNameModding)
 and a small mod loader; everything else is made by players, here.
-
+ 
 ## Install a mod (players)
 
 1. Have the newest blaze APK from the Discord installed, and start Yeeps once. The
