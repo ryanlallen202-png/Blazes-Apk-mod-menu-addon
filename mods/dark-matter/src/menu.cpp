@@ -1884,6 +1884,8 @@ static void ScanSounds() {
     g_soundFiles.clear();
     g_soundItems.clear();
     g_soundLabels.clear();
+    BuildView();                 // discard old dynamic pointers before returning to the menu
+    g_dirty = true;
     DIR *d = opendir(g_soundDirectory.c_str());
     if (!d) { Notify("Create mods/sounds folder first"); return; }
     while (dirent *e = readdir(d)) {
@@ -1905,6 +1907,7 @@ static void ScanSounds() {
         g_soundItems.push_back(Item{SOUND, g_soundLabels.back().c_str(), ACTION, MAIN, nullptr, nullptr, (int)i});
     }
     g_page = 0;
+    BuildView();                 // rebuild rows after creating the sound-file buttons
     g_dirty = true;
     Notify("Found %d sounds. Tap one to play", (int)g_soundFiles.size());
 }
