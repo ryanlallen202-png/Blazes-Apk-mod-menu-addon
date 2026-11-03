@@ -1714,16 +1714,12 @@ static std::string ModsSoundPath() {
     const char *dir = ym::api() ? ym::api()->modsDir : nullptr;
     return dir && dir[0] ? std::string(dir) + "/sounds" : "";
 }
-static std::vector<std::string> g_soundFiles;
-static size_t g_soundIndex = 0;
-static float g_soundVolume = 0.65f;
 static double g_soundEnd = 0, g_nextSoundPlay = 0;
 static bool g_soundActive = false, g_soundRemote = false;
-static Ref g_soundClip, g_soundSource, g_soundRecorder, g_oldRecorderClip;
+static Ref g_soundRecorder, g_oldRecorderClip;
 static int g_oldSourceType = 0;
 static bool g_oldLoop = false, g_oldVoiceDetection = false, g_oldRecording = false;
 static bool g_haveOldVoiceDetection = false, g_haveOldRecording = false;
-static std::string g_soundDirectory;
 
 static void RestoreVoiceRecorder() {
     Il2CppObject *rec = g_soundRecorder.get();
