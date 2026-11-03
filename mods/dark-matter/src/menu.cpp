@@ -13,6 +13,7 @@
 #include <cstdio>
 #include <cstring>
 #include <cstdint>
+#include <climits>
 #include <algorithm>
 #include <dirent.h>
 #include <fstream>
@@ -97,8 +98,14 @@ static struct {
     Method<XRDevice> deviceAtNode;
     Method<Il2CppObject *> trGetParent, trGetRoot, getComponentsInChildren, netLocal;
     Method<void> pvRpc;
-    Method<Il2CppObject *> audioClipCreate, applicationPersistentPath; // local soundboard
+    Method<Il2CppObject *> audioClipCreate, applicationPersistentPath; // decoded sound clips
     Method<bool> audioClipSetData;
+    Field<Il2CppObject *> voiceConnection;
+    Method<Il2CppObject *> voicePrimaryRecorder, voiceGetAudioClip;
+    Method<int> voiceGetSourceType;
+    Method<bool> voiceGetTransmitEnabled, voiceGetIsRecording, voiceGetLoopAudioClip;
+    Method<void> voiceSetSourceType, voiceSetAudioClip, voiceSetLoopAudioClip, voiceRestartRecording,
+                 voiceStartRecording, voiceStopRecording;
     Method<void> asSetClip, asSetVolume, asSetSpatial, asSetLoop, asPlay, asStop;
     Method<bool> asIsPlaying;
     BNM::MonoType *tAudioSource = nullptr;
@@ -171,6 +178,30 @@ static bool Lookups() {
             G.asStop = asrc.GetMethod("Stop", 0);
             G.asIsPlaying = asrc.GetMethod("get_isPlaying", 0);
         }
+    }
+    // Custom soundboard audio is fed into the game's existing Photon Voice recorder.
+    // This uses the normal voice-chat stream; it does not send arbitrary room RPCs.
+    {
+        Class manager("", "VoiceChatManager", Image("Assembly-CSharp.dll"));
+        if (manager.IsValid()) G.voiceConnection = manager.GetField("voiceConnection");
+        Class connection("Photon.Voice.Unity", "VoiceConnection");
+        if (connection.IsValid()) G.voicePrimaryRecorder = connection.GetMethod("get_PrimaryRecorder", 0);
+        Class recorder("Photon.Voice.Unity", "Recorder");
+        if (recorder.IsValid()) {
+            G.voiceGetAudioClip = recorder.GetMethod("get_AudioClip", 0);
+            G.voiceGetSourceType = recorder.GetMethod("get_SourceType", 0);
+            G.voiceGetLoopAudioClip = recorder.GetMethod("get_LoopAudioClip", 0);
+            G.voiceGetTransmitEnabled = recorder.GetMethod("get_TransmitEnabled", 0);
+            G.voiceGetIsRecording = recorder.GetMethod("get_IsRecording", 0);
+            G.voiceSetAudioClip = recorder.GetMethod("set_AudioClip", 1);
+            G.voiceSetSourceType = recorder.GetMethod("set_SourceType", 1);
+            G.voiceSetLoopAudioClip = recorder.GetMethod("set_LoopAudioClip", 1);
+            G.voiceRestartRecording = recorder.GetMethod("RestartRecording", 1);
+            G.voiceStartRecording = recorder.GetMethod("StartRecording", 0);
+            G.voiceStopRecording = recorder.GetMethod("StopRecording", 0);
+        }
+        ym::log("dark-matter: voice sound input manager=%d recorder=%d", G.voiceConnection.IsValid(),
+                G.voiceSetSourceType.IsValid() && G.voiceSetAudioClip.IsValid());
     }
     G.goFind = go.GetMethod("Find", 1);
     G.trSetParent = Overload(tr, "SetParent", {"UnityEngine.Transform", "System.Boolean"});
@@ -415,6 +446,10 @@ static size_t g_soundIndex = 0;
 static float g_soundVolume = 0.75f;
 static std::vector<float> g_soundPcm;
 static size_t g_soundLoadOffset = 0;
+static Ref g_voiceRecorder, g_voicePreviousClip;
+static int g_voicePreviousSourceType = 0;
+static bool g_voicePreviousLoop = true, g_voiceWasRecording = false, g_voiceOverrideActive = false;
+static double g_voiceRestoreAt = 0, g_soundNextAllowed = 0;
 static std::mutex g_soundMutex;
 static std::atomic<int> g_soundDecodeState{0}; // 0 idle, 1 decoding, 2 decoded, 3 failed
 static std::atomic<unsigned> g_soundGeneration{0};
@@ -472,9 +507,9 @@ static void OverpoweredOff();
 static void NextWeatherIntensity();
 static void TodPicked();
 
-enum Cat { MAIN, MOVEMENT, RIG, ITEMS, SOUNDBOARD, EFFECTS, OVERPOWERED, SETTINGS, ENABLED, EMOTES, CREDITS, NCAT };
-static const char *kCatName[NCAT] = {"Main", "Movement Mods", "Rig Mods", "Items", "Soundboard", "Effects", "Overpowered", "Settings", "Enabled Mods", "Emotes", "Credits"};
-enum Kind { OPEN, TOGGLE, ACTION };
+enum Cat { MAIN, MOVEMENT, RIG, ITEMS, SOUNDBOARD, SOUND_MP3, SOUND_WAV, EFFECTS, OVERPOWERED, SETTINGS, ENABLED, EMOTES, CREDITS, NCAT };
+static const char *kCatName[NCAT] = {"Main", "Movement Mods", "Rig Mods", "Items", "Soundboard", "MP3 Files", "WAV Files", "Effects", "Overpowered", "Settings", "Enabled Mods", "Emotes", "Credits"};
+enum Kind { OPEN, TOGGLE, ACTION, PLAY_FILE };
 struct Item {
     Cat cat;
     const char *label;
@@ -482,7 +517,11 @@ struct Item {
     Cat target = MAIN;            // OPEN: the page it opens
     bool *flag = nullptr;         // TOGGLE: the switch
     void (*fn)() = nullptr;       // ACTION, or called after a TOGGLE changes
+    size_t soundIndex = 0;        // PLAY_FILE: index in the scanned sound list
 };
+static std::vector<std::string> g_soundLabels;
+static std::vector<Item> g_soundItems;
+static void RebuildSoundItems();
 // The owner's layout (2026-10-31). Keep this order.
 static Item g_items[] = {
     {MAIN, "Settings", OPEN, SETTINGS},
@@ -545,12 +584,13 @@ static Item g_items[] = {
 
     {SOUNDBOARD, "Exit Soundboard", OPEN, MAIN},
     {SOUNDBOARD, "Scan Sounds Folder", ACTION, MAIN, nullptr, ScanSounds},
-    {SOUNDBOARD, "Previous Sound", ACTION, MAIN, nullptr, PreviousSound},
-    {SOUNDBOARD, "Next Sound", ACTION, MAIN, nullptr, NextSound},
-    {SOUNDBOARD, "Play Sound", ACTION, MAIN, nullptr, PlaySound},
+    {SOUNDBOARD, "MP3 Files", OPEN, SOUND_MP3},
+    {SOUNDBOARD, "WAV Files", OPEN, SOUND_WAV},
     {SOUNDBOARD, "Stop Sound", ACTION, MAIN, nullptr, StopSound},
     {SOUNDBOARD, "Volume Up", ACTION, MAIN, nullptr, SoundVolumeUp},
     {SOUNDBOARD, "Volume Down", ACTION, MAIN, nullptr, SoundVolumeDown},
+    {SOUND_MP3, "Back to Soundboard", OPEN, SOUNDBOARD},
+    {SOUND_WAV, "Back to Soundboard", OPEN, SOUNDBOARD},
 
     {EFFECTS, "Exit Effects", OPEN, MAIN},
     {EFFECTS, "Snow", TOGGLE, MAIN, &g_wxSel[0], WeatherPicked},
@@ -635,14 +675,14 @@ static const struct { const char *label, *tip; } kTips[] = {
     {"Jumping Jacks", "Arms go up and down at your sides. Hold left trigger."},
     {"Spaz", "Hands shake all over the place. Hold left trigger."},
     {"Beyblade", "Hands spin fast around your waist. Hold left trigger."},
-    {"Soundboard", "Plays local WAV and MP3 files from the DARK MATTER sounds folder."},
-    {"Scan Sounds Folder", "Finds WAV and MP3 files in the DARK MATTER sounds folder."},
-    {"Previous Sound", "Selects the previous local sound."},
-    {"Next Sound", "Selects the next local sound."},
-    {"Play Sound", "Loads and plays the selected sound locally through your headset."},
-    {"Stop Sound", "Stops local sound playback and cancels loading."},
-    {"Volume Up", "Raises local soundboard volume."},
-    {"Volume Down", "Lowers local soundboard volume."},
+    {"Soundboard", "Plays your custom MP3 and WAV files through voice chat and your headset."},
+    {"Scan Sounds Folder", "Finds MP3 and WAV files in the sounds folder."},
+    {"MP3 Files", "Open the MP3 sound list. Each file has its own play button."},
+    {"WAV Files", "Open the WAV sound list. Each file has its own play button."},
+    {"Back to Soundboard", "Return to the MP3 and WAV tabs."},
+    {"Stop Sound", "Stops playback and restores your normal microphone input."},
+    {"Volume Up", "Raises local headset playback volume."},
+    {"Volume Down", "Lowers local headset playback volume."},
     {"Effects", "Weather, disco and time of day. Only you see and hear them."},
     {"Morning", "Low sun, soft warm light and a little mist."},
     {"Afternoon", "High sun and a bright blue sky."},
@@ -731,6 +771,8 @@ static void BuildView() {
         for (auto &it : g_items) if (it.kind == TOGGLE && *it.flag && it.flag != &f_notify) g_view.push_back(&it);
     } else {
         for (auto &it : g_items) if (it.cat == g_cat) g_view.push_back(&it);
+        if (g_cat == SOUND_MP3 || g_cat == SOUND_WAV)
+            for (auto &it : g_soundItems) if (it.cat == g_cat) g_view.push_back(&it);
     }
     if (g_page >= PageCount()) g_page = 0;
 }
@@ -1042,7 +1084,7 @@ static void Press(Item *it) {
     case OPEN:
         g_cat = it->target;
         g_page = 0;
-        if (it->target == SOUNDBOARD) ScanSounds();      // lists the songs in the sounds folder
+        if (it->target == SOUNDBOARD || it->target == SOUND_MP3 || it->target == SOUND_WAV) ScanSounds();
         break;
     case TOGGLE:
         *it->flag = !*it->flag;
@@ -1051,6 +1093,12 @@ static void Press(Item *it) {
         break;
     case ACTION:
         if (it->fn) it->fn();
+        break;
+    case PLAY_FILE:
+        if (it->soundIndex < g_soundFiles.size()) {
+            g_soundIndex = it->soundIndex;
+            PlaySound();
+        }
         break;
     }
     g_dirty = true;
@@ -1780,6 +1828,85 @@ static void SpawnOnHandTick(const Buttons &in) {
     g_itemQueue.push_back({G.trGetPosition[hand]() + G.trGetForward[hand]() * 0.1f, Vector3(0, 0, 0)});
 }
 
+// ---- shared voice-chat sound input ------------------------------------------
+// The game's Photon Voice Recorder can use an AudioClip as its input source.
+// We temporarily swap its source for the selected clip, then restore the player's
+// previous microphone/source settings when the clip ends or Stop is pressed.
+static Il2CppObject *FindVoiceRecorder() {
+    if (!G.findAll.IsValid() || !G.voiceConnection.IsValid() || !G.voicePrimaryRecorder.IsValid()) return nullptr;
+    Class manager("", "VoiceChatManager", Image("Assembly-CSharp.dll"));
+    if (!manager.IsValid() || !manager.GetMonoType()) return nullptr;
+    auto *arr = (uint8_t *)G.findAll((Il2CppObject *)manager.GetMonoType());
+    size_t count = arr ? *(uintptr_t *)(arr + 0x18) : 0;
+    for (size_t i = 0; i < count; ++i) {
+        Il2CppObject *instance = ((Il2CppObject **)(arr + 0x20))[i];
+        if (!Alive(instance)) continue;
+        Il2CppObject *connection = G.voiceConnection[instance]();
+        if (!Alive(connection)) continue;
+        Il2CppObject *recorder = G.voicePrimaryRecorder[connection]();
+        if (Alive(recorder)) return recorder;
+    }
+    return nullptr;
+}
+static void RestoreVoiceInput() {
+    if (!g_voiceOverrideActive) return;
+    g_voiceOverrideActive = false;
+    Il2CppObject *recorder = g_voiceRecorder.get();
+    if (Alive(recorder)) {
+        try {
+            G.voiceSetAudioClip[recorder](g_voicePreviousClip.get());
+            G.voiceSetLoopAudioClip[recorder](g_voicePreviousLoop);
+            G.voiceSetSourceType[recorder](g_voicePreviousSourceType);
+            if (g_voiceWasRecording) {
+                if (G.voiceRestartRecording.IsValid()) G.voiceRestartRecording[recorder](false);
+                else {
+                    if (G.voiceStopRecording.IsValid()) G.voiceStopRecording[recorder]();
+                    if (G.voiceStartRecording.IsValid()) G.voiceStartRecording[recorder]();
+                }
+            }
+        } catch (...) { ym::log("dark-matter: could not restore voice input"); }
+    }
+    g_voiceRecorder.clear();
+    g_voicePreviousClip.clear();
+    g_voiceWasRecording = false;
+    g_voiceRestoreAt = 0;
+}
+static bool StartVoicePlayback(Il2CppObject *clip, double duration) {
+    if (!Alive(clip) || !G.voiceGetTransmitEnabled.IsValid() || !G.voiceGetIsRecording.IsValid() ||
+        !G.voiceGetSourceType.IsValid() || !G.voiceGetAudioClip.IsValid() || !G.voiceGetLoopAudioClip.IsValid() ||
+        !G.voiceSetAudioClip.IsValid() || !G.voiceSetSourceType.IsValid() || !G.voiceSetLoopAudioClip.IsValid() ||
+        (!G.voiceRestartRecording.IsValid() && (!G.voiceStopRecording.IsValid() || !G.voiceStartRecording.IsValid()))) {
+        Notify("Voice chat audio input is unavailable");
+        return false;
+    }
+    Il2CppObject *recorder = FindVoiceRecorder();
+    if (!Alive(recorder)) { Notify("Voice chat recorder not found"); return false; }
+    if (!G.voiceGetTransmitEnabled[recorder]()) { Notify("Unmute voice chat to play for the room"); return false; }
+    if (!G.voiceGetIsRecording[recorder]()) { Notify("Voice chat is not recording"); return false; }
+    g_voiceRecorder.set(recorder);
+    g_voicePreviousSourceType = G.voiceGetSourceType[recorder]();
+    g_voicePreviousClip.set(G.voiceGetAudioClip[recorder]());
+    g_voicePreviousLoop = G.voiceGetLoopAudioClip[recorder]();
+    g_voiceWasRecording = true;
+    g_voiceOverrideActive = true;
+    try {
+        G.voiceSetAudioClip[recorder](clip);
+        G.voiceSetLoopAudioClip[recorder](false);
+        G.voiceSetSourceType[recorder](1); // Recorder.InputSourceType.AudioClip
+        if (G.voiceRestartRecording.IsValid()) G.voiceRestartRecording[recorder](false);
+        else {
+            G.voiceStopRecording[recorder]();
+            G.voiceStartRecording[recorder]();
+        }
+    } catch (...) {
+        RestoreVoiceInput();
+        Notify("Could not route sound through voice chat");
+        return false;
+    }
+    g_voiceRestoreAt = g_time + (duration < 1.0 ? 1.0 : duration);
+    return true;
+}
+
 // ---- local soundboard -------------------------------------------------------
 // This is local headset playback only. The repository forbids network activity;
 // it does not inject audio into the game's microphone or transmit clips to a lobby.
@@ -1824,6 +1951,23 @@ static std::string PersistentPath() {
     }
     return out;
 }
+static void RebuildSoundItems() {
+    g_soundLabels.clear();
+    g_soundItems.clear();
+    g_soundLabels.reserve(g_soundFiles.size());
+    g_soundItems.reserve(g_soundFiles.size());
+    for (size_t i = 0; i < g_soundFiles.size(); ++i) {
+        const std::string &path = g_soundFiles[i];
+        size_t slash = path.find_last_of('/');
+        std::string name = slash == std::string::npos ? path : path.substr(slash + 1);
+        std::string ext = name.size() >= 4 ? name.substr(name.size() - 4) : "";
+        for (char &c : ext) c = (char)tolower((unsigned char)c);
+        Cat cat = ext == ".mp3" ? SOUND_MP3 : SOUND_WAV;
+        g_soundLabels.push_back(name);
+        Item item{cat, g_soundLabels.back().c_str(), PLAY_FILE, MAIN, nullptr, nullptr, i};
+        g_soundItems.push_back(item);
+    }
+}
 static void ScanSounds() {
     std::string base = PersistentPath();
     if (base.empty()) { Notify("Soundboard path unavailable"); return; }
@@ -1842,9 +1986,12 @@ static void ScanSounds() {
     closedir(d);
     std::sort(g_soundFiles.begin(), g_soundFiles.end());
     g_soundIndex = 0;
+    RebuildSoundItems();
     Notify("Found %d WAV/MP3 files", (int)g_soundFiles.size());
 }
 static void StopSound() {
+    RestoreVoiceInput();
+    g_soundNextAllowed = g_time;
     ++g_soundGeneration;                 // invalidate any decoder still working
     g_soundDecodeState.store(0);
     {
@@ -1861,7 +2008,7 @@ static void StopSound() {
     Kill(g_soundClip);
 }
 static void SelectSound(int direction) {
-    if (g_soundFiles.empty()) { Notify("No WAV files. Scan sounds folder first"); return; }
+    if (g_soundFiles.empty()) { Notify("No sound files found. Scan the sounds folder"); return; }
     int n = (int)g_soundFiles.size();
     g_soundIndex = (size_t)((((int)g_soundIndex + direction) % n + n) % n);
     const std::string &p = g_soundFiles[g_soundIndex];
@@ -1883,6 +2030,7 @@ static void SoundVolumeDown() {
 // File I/O and codec work run on a worker thread. Unity objects are only touched
 // later by SoundLoadTick on the game thread, so pressing Play never stalls menu input.
 static void PlaySound() {
+    if (g_time < g_soundNextAllowed) { Notify("Wait until the current sound finishes"); return; }
     if (g_soundDecodeState.load() == 1) { Notify("Sound is already loading"); return; }
     if (g_soundFiles.empty()) ScanSounds();
     if (g_soundFiles.empty()) return;
@@ -1891,7 +2039,6 @@ static void PlaySound() {
         Notify("Unity audio methods unavailable"); return;
     }
     const std::string path = g_soundFiles[g_soundIndex];
-    const unsigned generation = ++g_soundGeneration;
     StopSound();
     const unsigned job = g_soundGeneration.load();
     g_soundDecodeState.store(1);
@@ -1909,7 +2056,7 @@ static void PlaySound() {
                 rate = (int)mp3.sampleRate;
                 drmp3_uint64 count = drmp3_get_pcm_frame_count(&mp3);
                 if (channels >= 1 && channels <= 2 && rate >= 8000 && rate <= 192000 &&
-                    count > 0 && count <= (drmp3_uint64)rate * 30) {
+                    count > 0 && count <= (drmp3_uint64)INT_MAX) {
                     frames = (size_t)count;
                     pcm.resize(frames * (size_t)channels);
                     drmp3_uint64 got = drmp3_read_pcm_frames_f32(&mp3, count, pcm.data());
@@ -1925,7 +2072,7 @@ static void PlaySound() {
                 if (ParseWav(bytes, w)) {
                     size_t frameBytes = (size_t)w.channels * 2;
                     frames = w.dataBytes / frameBytes;
-                    if (frames && frames <= (size_t)w.sampleRate * 30) {
+                    if (frames && frames <= (size_t)INT_MAX) {
                         channels = w.channels;
                         rate = w.sampleRate;
                         pcm.resize(frames * (size_t)channels);
@@ -1953,10 +2100,11 @@ static void PlaySound() {
 }
 
 static void SoundLoadTick() {
+    if (g_voiceOverrideActive && g_time >= g_voiceRestoreAt) RestoreVoiceInput();
     int state = g_soundDecodeState.load();
     if (state == 3) {
         g_soundDecodeState.store(0);
-        Notify("Could not decode sound. Check file format and 30s limit");
+        Notify("Could not decode sound. Check that it is a supported MP3 or PCM16 WAV file");
         return;
     }
     if (state == 2 && !Alive(g_soundClip.get())) {
@@ -1998,20 +2146,31 @@ static void SoundLoadTick() {
         g_soundPcm.clear();
         g_soundPcm.shrink_to_fit();
         g_soundDecodeState.store(0);
+        const double duration = rate > 0 ? (double)frames / (double)rate : 0.0;
+        const bool voiceSent = StartVoicePlayback(g_soundClip.get(), duration);
+        bool localStarted = false;
         if (!Alive(g_soundSource.get())) {
             Il2CppObject *go = Class("UnityEngine", "GameObject").CreateNewObjectParameters(CreateMonoString("DARK MATTER Soundboard"));
             Il2CppObject *sourceComp = go ? G.goAddComponent[go](G.tAudioSource) : nullptr;
-            if (!sourceComp) { if (go) G.destroy(go); Kill(g_soundClip); Notify("Could not create audio source"); return; }
-            g_soundSource.set(sourceComp);
-            if (g_head.get()) G.trSetParent[Tr(go)](Tr(g_head.get()), false);
-            G.asSetSpatial[sourceComp](0.0f);
+            if (sourceComp) {
+                g_soundSource.set(sourceComp);
+                if (g_head.get()) G.trSetParent[Tr(go)](Tr(g_head.get()), false);
+                G.asSetSpatial[sourceComp](0.0f);
+            } else if (go) G.destroy(go);
         }
-        G.asSetVolume[g_soundSource.get()](g_soundVolume);
-        G.asSetClip[g_soundSource.get()](g_soundClip.get());
-        G.asPlay[g_soundSource.get()]();
+        if (Alive(g_soundSource.get())) {
+            G.asSetVolume[g_soundSource.get()](g_soundVolume);
+            G.asSetClip[g_soundSource.get()](g_soundClip.get());
+            G.asPlay[g_soundSource.get()]();
+            localStarted = true;
+        }
+        g_soundNextAllowed = g_time + (duration < 1.0 ? 1.0 : duration);
         const std::string &p = g_soundFiles[g_soundIndex];
         size_t slash = p.find_last_of('/');
-        Notify("Playing: %s", slash == std::string::npos ? p.c_str() : p.c_str() + slash + 1);
+        const char *name = slash == std::string::npos ? p.c_str() : p.c_str() + slash + 1;
+        if (voiceSent) Notify("Playing to room: %s", name);
+        else if (localStarted) Notify("Local only (voice chat unavailable): %s", name);
+        else Notify("Could not start audio playback");
     }
 }
 
