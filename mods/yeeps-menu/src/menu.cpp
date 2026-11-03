@@ -867,7 +867,6 @@ static void ApplyLongArms() {
     } else if (!f_longArms && g_longArmsPlayer) {
         if (player == g_longArmsPlayer && t) G.trSetLocalScale[t](Vector3(1, 1, 1));
         g_longArmsPlayer = nullptr;
-    g_gravityOff = false;
     }
 }
 
@@ -1039,6 +1038,7 @@ static void OnRoomChange() {
     }
     g_boosted = nullptr;
     g_longArmsPlayer = nullptr;
+    g_gravityOff = false;
     for (Ref *r : {&g_player, &g_rigidbody, &g_leftHand, &g_rightHand, &g_head}) r->clear();
     g_built = false; g_menuShown = false; g_touching = -2;
 }
