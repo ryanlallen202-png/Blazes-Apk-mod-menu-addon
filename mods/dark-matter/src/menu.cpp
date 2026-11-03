@@ -11,8 +11,10 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cctype>
 #include <dirent.h>
 #include <fstream>
+#include <sys/stat.h>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
