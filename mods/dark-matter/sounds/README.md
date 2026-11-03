@@ -145,3 +145,7 @@ A regression test reproduced a microphone-restoration error that discarded saved
 A one-shot live check uses the optional `IsCurrentlyTransmitting` getter. The initial message now says **Voice input configured**, not **Playing to room**. It then reports voice activity, no observed activity, an input replaced by the game, or an unavailable accessor in the checkpoint. Even a positive sending flag does not prove another player hears it. No automatic replay or forced transmit is added.
 
 Host and Android builds cannot certify receiver audibility. A second-player headset test remains necessary.
+
+## Combined TS Port 12
+
+This version keeps revision 11's soundboard in the single combined `diddy-client.so`. The supported native adaptations of the four uploaded TypeScript files and all exclusions are documented in [COMBINED_PORTS.md](../COMBINED_PORTS.md). It does not add another menu/runtime or change soundboard cooldown/mute behavior. Install only this client library, not old copies alongside it. Receiver audibility still requires an on-headset second-listener test.

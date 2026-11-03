@@ -23,6 +23,7 @@
 #include <cctype>
 #include "dr_mp3.h"
 #include "SoundBoard.h"
+#include "CombinedSupport.h"
 #include <strings.h>
 #include <ctime>
 #include <string>
@@ -38,7 +39,7 @@ using namespace BNM::Structures::Unity;
 using BNM::IL2CPP::Il2CppObject;
 
 YEEPS_MOD("Diddy Client")
-#define DM_VERSION "Soundboard Verification 11"
+#define DM_VERSION "Combined TS Port 12"
 
 // ---- small helpers ---------------------------------------------------------
 
@@ -138,6 +139,14 @@ struct XRDevice { uint64_t id; bool initialized; };
 static bool g_customFont = false;       // Londrina Solid loaded from the fonts folder
 static struct {
     bool ok = false;
+    Method<Il2CppObject *> utilityFromId, utilityParent;
+    Method<BNM::Structures::Mono::String *> utilityName, mapKey, mobKey, signGetText;
+    Field<Il2CppObject *> signText;
+    Field<BNM::Structures::Mono::String *> techPattern;
+    Field<float> rollSpeed;
+    BNM::MonoType *utilityTypes[7] = {};
+    const BNM::IL2CPP::Il2CppImage *metadataImage = nullptr;
+    BNM::IL2CPP::Il2CppClass *(*metadataClass)(const BNM::IL2CPP::Il2CppImage *, size_t) = nullptr;
     Method<Il2CppObject *> createPrimitive, goTransform, goGetComponent, goAddComponent, compTransform, compGameObject;
     Method<void> goSetActive, destroy, trSetParent, trSetPosition, trSetRotation, trSetLocalPosition,
                  trSetLocalRotation, trSetLocalScale, rbSetVelocity, matSetColor, matSetShader,
@@ -218,6 +227,35 @@ static bool Lookups() {
     G.compGameObject = comp.GetMethod("get_gameObject", 0);
     G.destroy = Overload(obj, "Destroy", {"UnityEngine.Object"});
     G.alive = obj.GetMethod("op_Implicit", 1);
+    // Optional TS utilities: resolve once, never on a trigger/update loop.
+    G.utilityFromId = Overload(obj, "FindObjectFromInstanceID", {"System.Int32"});
+    G.utilityParent = Overload(comp, "GetComponentInParent", {"System.Type"});
+    G.utilityName = obj.GetMethod("get_name", 0);
+    Image gameImage("Assembly-CSharp.dll");
+    G.metadataImage = gameImage.GetInfo();
+    G.metadataClass = (decltype(G.metadataClass))R("il2cpp_image_get_class");
+    const char *utilityClasses[] = {"TextSignMapObject", "MapObject", "Item", "MapObject", "Mob", "TechWebThoughtBubble", "CustomWirableDispenserMapObject"};
+    for (int i = 0; i < 7; ++i) {
+        Class c("", utilityClasses[i], gameImage);
+        if (c.IsValid()) G.utilityTypes[i] = c.GetMonoType();
+    }
+    Class map("", "MapObject", gameImage), mob("", "Mob", gameImage), sign("", "TextSignMapObject", gameImage), tech("", "TechWebThoughtBubble", gameImage);
+    G.mapKey = map.GetMethod("get_key", 0);
+    G.mobKey = mob.GetMethod("get_mobKey", 0);
+    G.signText = sign.GetField("messageText");
+    if (G.signText.IsValid()) G.signGetText = Class(G.signText.GetInfo()->type).GetMethod("get_text", 0);
+    G.techPattern = tech.GetField("patternKey");
+    if (G.techPattern.IsValid() && TypeName(G.techPattern.GetInfo()->type) != "System.String") G.techPattern = {};
+    auto requireStringResult = [](Method<BNM::Structures::Mono::String *> &method) {
+        if (method.IsValid() && TypeName(method.GetInfo()->return_type) != "System.String") method = MethodBase{};
+    };
+    requireStringResult(G.utilityName);
+    requireStringResult(G.mapKey);
+    requireStringResult(G.mobKey);
+    requireStringResult(G.signGetText);
+    G.rollSpeed = player.GetField("rollSpeed");
+    if (G.rollSpeed.IsValid() && (TypeName(G.rollSpeed.GetInfo()->type) != "System.Single" || (G.rollSpeed.GetInfo()->type->attrs & 0x10))) G.rollSpeed = {};
+
     {
         Class aclip("UnityEngine", "AudioClip"), asrc("UnityEngine", "AudioSource"), flt("System", "Single"), application("UnityEngine", "Application");
         G.applicationPersistentPath = application.GetMethod("get_persistentDataPath", 0);
@@ -512,6 +550,17 @@ static Buttons ReadButtons() {
 // Feature switches. Every feature only changes your own game.
 static bool f_velocityFly, f_ironMan, f_tpGun, f_noclip, f_speedBoost, f_noGravity;
 static bool f_itemGun, f_spawnOnHand, f_car, f_stickFly, f_dash;
+static bool f_hoverFly, f_flipGravity, f_freezeMenu, f_fastRoll;
+static bool g_utilityFlags[8] = {};
+static int g_utilitySelected = -1;
+static diddy::combined::TriggerGate g_utilityGate;
+static void CombinedMovementReset();
+static void UtilityPicked();
+static void PrimaryGunPicked();
+static void MetadataNextClass();
+static void MetadataNextMembers();
+static void CheckRoomSender();
+static void CombinedNotes();
 static bool f_longArms, f_superSpeed, f_megaJump, f_superFly, f_rocket, f_grapple, f_groundPound, f_flingGun, f_propGun, f_bounce;   // Overpowered
 static Ref g_soundSource, g_soundClip;
 enum class SoundStartPhase { Idle, Source, Local, Voice };
@@ -586,8 +635,8 @@ static void OverpoweredOff();
 static void NextWeatherIntensity();
 static void TodPicked();
 
-enum Cat { MAIN, MOVEMENT, RIG, ITEMS, SOUNDBOARD, SOUND_MP3, SOUND_WAV, EFFECTS, OVERPOWERED, SETTINGS, ENABLED, EMOTES, CREDITS, NCAT };
-static const char *kCatName[NCAT] = {"Main", "Movement Mods", "Rig Mods", "Items", "Soundboard", "MP3 Files", "WAV Files", "Effects", "Overpowered", "Settings", "Enabled Mods", "Emotes", "Credits"};
+enum Cat { MAIN, MOVEMENT, RIG, ITEMS, SOUNDBOARD, SOUND_MP3, SOUND_WAV, EFFECTS, OVERPOWERED, SETTINGS, ENABLED, EMOTES, CREDITS, UTILITY, NCAT };
+static const char *kCatName[NCAT] = {"Main", "Movement Mods", "Rig Mods", "Items", "Soundboard", "MP3 Files", "WAV Files", "Effects", "Overpowered", "Settings", "Enabled Mods", "Emotes", "Credits", "Utility Mods"};
 enum Kind { OPEN, TOGGLE, ACTION, PLAY_FILE };
 struct Item {
     Cat cat;
@@ -613,6 +662,7 @@ static Item g_items[] = {
     {MAIN, "Enabled Mods", OPEN, ENABLED},
     {MAIN, "Emotes", OPEN, EMOTES},
     {MAIN, "Credits", OPEN, CREDITS},
+    {MAIN, "Utility Mods", OPEN, UTILITY},
 
     {MOVEMENT, "Exit Movement Mods", OPEN, MAIN},
     {MOVEMENT, "Platforms", TOGGLE, MAIN, &f_platforms},
@@ -620,7 +670,7 @@ static Item g_items[] = {
     {MOVEMENT, "Fast Fly", TOGGLE, MAIN, &f_fastFly},
     {MOVEMENT, "Velocity Fly", TOGGLE, MAIN, &f_velocityFly},
     {MOVEMENT, "Car", TOGGLE, MAIN, &f_car},
-    {MOVEMENT, "Teleport Gun", TOGGLE, MAIN, &f_tpGun},
+    {MOVEMENT, "Teleport Gun", TOGGLE, MAIN, &f_tpGun, PrimaryGunPicked},
     {MOVEMENT, "Iron Man", TOGGLE, MAIN, &f_ironMan},
     {MOVEMENT, "Noclip", TOGGLE, MAIN, &f_noclip},
     {MOVEMENT, "Speed Boost", TOGGLE, MAIN, &f_speedBoost, ApplySpeedBoost},
@@ -631,6 +681,22 @@ static Item g_items[] = {
     {MOVEMENT, "Bounce", TOGGLE, MAIN, &f_bounce},
     {MOVEMENT, "Thumbstick Fly", TOGGLE, MAIN, &f_stickFly},
     {MOVEMENT, "Dash", TOGGLE, MAIN, &f_dash},
+    {MOVEMENT, "Fly (No Gravity)", TOGGLE, MAIN, &f_hoverFly},
+    {MOVEMENT, "Flip Gravity (Local)", TOGGLE, MAIN, &f_flipGravity},
+    {MOVEMENT, "Fast Roll Speed", TOGGLE, MAIN, &f_fastRoll},
+
+    {UTILITY, "Exit Utility Mods", OPEN, MAIN},
+    {UTILITY, "Get Sign Text Gun", TOGGLE, MAIN, &g_utilityFlags[0], UtilityPicked},
+    {UTILITY, "Save MapObj Coordinate Gun", TOGGLE, MAIN, &g_utilityFlags[1], UtilityPicked},
+    {UTILITY, "Get Item Gun", TOGGLE, MAIN, &g_utilityFlags[2], UtilityPicked},
+    {UTILITY, "Get Map Object Gun", TOGGLE, MAIN, &g_utilityFlags[3], UtilityPicked},
+    {UTILITY, "Get Mob Data Gun", TOGGLE, MAIN, &g_utilityFlags[4], UtilityPicked},
+    {UTILITY, "Get Tech Web Connection Gun", TOGGLE, MAIN, &g_utilityFlags[5], UtilityPicked},
+    {UTILITY, "Dispenser Info Gun", TOGGLE, MAIN, &g_utilityFlags[6], UtilityPicked},
+    {UTILITY, "Object Info Gun", TOGGLE, MAIN, &g_utilityFlags[7], UtilityPicked},
+    {UTILITY, "Check Room Sender", ACTION, MAIN, nullptr, CheckRoomSender},
+    {UTILITY, "Next Metadata Class", ACTION, MAIN, nullptr, MetadataNextClass},
+    {UTILITY, "Next Metadata Members", ACTION, MAIN, nullptr, MetadataNextMembers},
 
 
     {EMOTES, "Exit Emotes", OPEN, MAIN},
@@ -655,7 +721,7 @@ static Item g_items[] = {
     {RIG, "Beyblade", TOGGLE, MAIN, &g_danceSel[7], DancePicked},
 
     {ITEMS, "Exit Items", OPEN, MAIN},
-    {ITEMS, "Spawn Item Gun", TOGGLE, MAIN, &f_itemGun},
+    {ITEMS, "Spawn Item Gun", TOGGLE, MAIN, &f_itemGun, PrimaryGunPicked},
     {ITEMS, "Duplicate Items (3x3)", ACTION, MAIN, nullptr, ArmDupe9},
     {ITEMS, "Duplicate Items (3x3x3)", ACTION, MAIN, nullptr, ArmDupe27},
     {ITEMS, "Duplicate Items (9x3)", ACTION, MAIN, nullptr, ArmDupe9x3},
@@ -698,6 +764,7 @@ static Item g_items[] = {
     {OVERPOWERED, "Turn Overpowered Off", ACTION, MAIN, nullptr, OverpoweredOff},
 
     {SETTINGS, "Exit Settings", OPEN, MAIN},
+    {SETTINGS, "Freeze Player in Menu", TOGGLE, MAIN, &f_freezeMenu},
     {SETTINGS, "Change Pointer Position", ACTION, MAIN, nullptr, NextPointer},
     {SETTINGS, "Iron Man Speed", ACTION, MAIN, nullptr, NextIronSpeed},
     {SETTINGS, "Car Speed", ACTION, MAIN, nullptr, NextCarSpeed},
@@ -711,12 +778,21 @@ static Item g_items[] = {
 
     {CREDITS, "Exit Credits", OPEN, MAIN},
     {CREDITS, "@CampDaBell", ACTION, MAIN, nullptr, nullptr},
+    {CREDITS, "TS Source Credits", ACTION, MAIN, nullptr, CombinedNotes},
 };
 static constexpr int kItems = sizeof(g_items) / sizeof(g_items[0]);
 static Item g_returnItem = {ENABLED, "Exit Enabled Mods", OPEN, MAIN};
 
 // Tooltips, shown under the menu while your finger is on a button (like ii's).
 static const struct { const char *label, *tip; } kTips[] = {
+    {"Utility Mods", "Read-only tools: grip to aim, press trigger once to inspect."},
+    {"Freeze Player in Menu", "Pins only your own position while the menu is open."},
+    {"Fly (No Gravity)", "Hold A to fly along your right hand; release A to hover."},
+    {"Flip Gravity (Local)", "Bounded upward acceleration for you only. No global gravity changes."},
+    {"Fast Roll Speed", "Up to 2x local roll speed, capped at 40. Restores on Off/room change."},
+    {"Next Metadata Class", "yeepsmenuD: browse one game class per press. See checkpoint."},
+    {"Next Metadata Members", "Log up to four member names, never instance values."},
+    {"TS Source Credits", "Source layouts: @goldentrophy / @crimsoncauldron. See COMBINED_PORTS.md."},
     {"Settings", "Opens the settings."},
     {"Movement Mods", "Opens the movement mods."},
     {"Enabled Mods", "Shows every mod you have on."},
@@ -801,6 +877,7 @@ static const struct { const char *label, *tip; } kTips[] = {
 static const char *TipFor(const char *label) {
     if (strncmp(label, "Exit ", 5) == 0) return "Returns you back to the main category.";
     for (auto &t : kTips) if (strcmp(t.label, label) == 0) return t.tip;
+    if (strstr(label, " Gun")) return "Read-only tool: right grip aims, a fresh trigger press inspects.";
     return "";
 }
 
@@ -1313,7 +1390,9 @@ static void NextIronSpeed() { g_ironSpeed = (g_ironSpeed + 1) % 4; Notify("Iron 
 static void NextTheme() { g_theme = (g_theme + 1) % kThemeCount; Notify("Theme: %s", T().name); }
 static void AllOff() {
     for (auto &it : g_items) if (it.kind == TOGGLE && it.flag != &f_notify) *it.flag = false;   // ticks undo each mod
+    CombinedMovementReset();
     g_dance = -1;
+    g_utilitySelected = -1;
     g_dupeArmed = 0;
     g_wx = -1;
     g_tod = -1;
@@ -1359,7 +1438,7 @@ static void DashTick(const Buttons &in) {
 
 static void LowGravityTick(const Buttons &in, float dt) {
     Vector3 v;
-    if (!f_lowGravity || f_noGravity || f_stickFly || (f_fly && in.a) || !GetVel(v)) return;
+    if (!f_lowGravity || f_noGravity || f_hoverFly || f_flipGravity || f_stickFly || (f_fly && in.a) || !GetVel(v)) return;
     SetVel(v + Vector3(0, 9.81f * 0.7f * dt, 0));       // cancels 70% of gravity
 }
 
@@ -1470,7 +1549,7 @@ static void ApplyGravity() {
     // The game's own "no gravity for a while" (what its levitation items use), renewed
     // every frame while the mod is on; it wears off by itself once you turn it off.
     Il2CppObject *player = g_player.get();
-    if (f_noGravity && player && G.plNoGravityFor.IsValid()) G.plNoGravityFor[player](0.25f);
+    if ((f_noGravity || f_hoverFly) && player && G.plNoGravityFor.IsValid()) G.plNoGravityFor[player](0.25f);
     g_gravityOff = f_noGravity;
 }
 
@@ -1545,7 +1624,7 @@ static void NoclipTick(const Buttons &in) {
 static Ref g_gunLine, g_gunLineGo, g_gunBall;
 static bool g_gunTrigger = false;
 static void TeleportGunTick(const Buttons &in) {
-    bool aiming = (f_tpGun || f_itemGun) && in.rgrip;
+    bool aiming = (f_tpGun || f_itemGun || g_utilitySelected >= 0) && in.rgrip && !g_menuShown;
     if (!aiming) {
         Show(g_gunLineGo, false);
         Show(g_gunBall, false);
@@ -1582,7 +1661,7 @@ static void TeleportGunTick(const Buttons &in) {
     G.lrSetPosition[g_gunLine.get()](0, start);
     G.lrSetPosition[g_gunLine.get()](1, end);
     SetColor(g_gunBall.get(), in.rtrig ? T().buttonOn : T().bgB);
-    if (in.rtrig && !g_gunTrigger && found) {
+    if (g_utilitySelected < 0 && in.rtrig && !g_gunTrigger && found) {
         if (f_itemGun) {                                  // Spawn Item Gun: an item at that spot
             if (g_time >= g_nextItem && LeftHandItem()) {
                 g_nextItem = g_time + 0.5;
@@ -3576,6 +3655,8 @@ static void OverpoweredReset() {                               // room change: t
     for (auto &r : g_ring) Kill(r);
 }
 
+#include "CombinedPorts.hpp"
+
 // ---- callbacks ---------------------------------------------------------------
 
 static void OnRoomChange() {
@@ -3584,6 +3665,8 @@ static void OnRoomChange() {
     for (int r = 0; r < kRows; r++) { g_rowCube[r].clear(); g_rowLabel[r].clear(); g_rowText[r].clear(); }
     for (Ref *r : {&g_board, &g_bg, &g_outline, &g_title, &g_titleBar, &g_prev, &g_next, &g_notifyText, &g_tipText}) r->clear();
     StopSound();
+    CombinedMovementReset();
+    g_utilityGate.Reset();
     Kill(g_soundSource); // destroy only the component we added, not the head GameObject
     g_homeCube.clear();
     g_homeLabel.clear();
@@ -3696,6 +3779,20 @@ static void OnUpdate(float dt) {
     catch (...) {
         for (auto &it : g_items) if (it.cat == OVERPOWERED && it.kind == TOGGLE) *it.flag = false;
         ym::log("dark-matter: overpowered error, turned off");
+    }
+    try {
+        FastRollTick();
+        HoverFlyTick(in);
+        FlippedGravityTick(dt);
+        UtilityTick(in);
+        MenuFreezeTick();
+    } catch (...) {
+        f_fastRoll = f_hoverFly = f_flipGravity = f_freezeMenu = false;
+        for (bool &flag : g_utilityFlags) flag = false;
+        g_utilitySelected = -1;
+        try { CombinedMovementReset(); } catch (...) {}
+        ym::log("diddy combined: optional port error; features disabled");
+        Notify("Optional feature unavailable; see checkpoint");
     }
     DanceTick(in, dt);              // last: it moves your hands after everything else
 }

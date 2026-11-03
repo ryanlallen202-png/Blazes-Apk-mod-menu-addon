@@ -1,0 +1,1233 @@
+{
+  "version": "Combined TS Port 12",
+  "output": "diddy-client.so",
+  "scope": "Supported-feature native merge, NOT a complete conversion of every supplied button. Original TypeScript and export tables are not embedded or executed.",
+  "sources": [
+    {
+      "file": "ym.ts",
+      "sha256": "fcac68156f08f9c4f0b8a2d4fa6b3068b33a70b42fe2a68337decb16f628f6bb",
+      "bytes": 89503,
+      "features": [
+        {
+          "source_label": "Settings",
+          "status": "merged",
+          "target": "Settings",
+          "note": "Shares one native implementation and menu state; duplicate script engines are not bundled."
+        },
+        {
+          "source_label": "Movement Mods",
+          "status": "merged",
+          "target": "Movement Mods",
+          "note": "Shares one native implementation and menu state; duplicate script engines are not bundled."
+        },
+        {
+          "source_label": "Fun Mods",
+          "status": "merged",
+          "target": "Effects",
+          "note": "Shares one native implementation and menu state; duplicate script engines are not bundled."
+        },
+        {
+          "source_label": "Rig Mods",
+          "status": "merged",
+          "target": "Rig Mods",
+          "note": "Shares one native implementation and menu state; duplicate script engines are not bundled."
+        },
+        {
+          "source_label": "Spawner Mods",
+          "status": "merged",
+          "target": "Items",
+          "note": "Shares one native implementation and menu state; duplicate script engines are not bundled."
+        },
+        {
+          "source_label": "Overpowered Mods",
+          "status": "merged",
+          "target": "Overpowered",
+          "note": "Shares one native implementation and menu state; duplicate script engines are not bundled."
+        },
+        {
+          "source_label": "Disconnect",
+          "status": "unsupported",
+          "note": "No verified portable SDK equivalent included. No placeholder button is presented as working."
+        },
+        {
+          "source_label": "PreviousPage",
+          "status": "navigation",
+          "target": "Native Home/Back/page arrows",
+          "note": "Consolidated navigation; empty excluded categories are not retained."
+        },
+        {
+          "source_label": "NextPage",
+          "status": "navigation",
+          "target": "Native Home/Back/page arrows",
+          "note": "Consolidated navigation; empty excluded categories are not retained."
+        },
+        {
+          "source_label": "Exit Settings",
+          "status": "navigation",
+          "target": "Native Home/Back/page arrows",
+          "note": "Consolidated navigation; empty excluded categories are not retained."
+        },
+        {
+          "source_label": "Freeze Player in Menu",
+          "status": "ported",
+          "target": "Freeze Player in Menu",
+          "note": "Optional runtime bindings fail closed when unavailable."
+        },
+        {
+          "source_label": "Unfinished/Dev Mods",
+          "status": "unsupported",
+          "note": "No verified portable SDK equivalent included. No placeholder button is presented as working."
+        },
+        {
+          "source_label": "Exit Movement Mods",
+          "status": "navigation",
+          "target": "Native Home/Back/page arrows",
+          "note": "Consolidated navigation; empty excluded categories are not retained."
+        },
+        {
+          "source_label": "Iron Man",
+          "status": "merged",
+          "target": "Iron Man",
+          "note": "Shares one native implementation and menu state; duplicate script engines are not bundled."
+        },
+        {
+          "source_label": "Fly",
+          "status": "merged",
+          "target": "Fly",
+          "note": "Shares one native implementation and menu state; duplicate script engines are not bundled."
+        },
+        {
+          "source_label": "Fly (No gravity)",
+          "status": "adapted",
+          "target": "Fly (No Gravity)",
+          "note": "Uses the game no-gravity duration API and the existing velocity path; not a Frida Rigidbody patch."
+        },
+        {
+          "source_label": "Noclip",
+          "status": "merged",
+          "target": "Noclip",
+          "note": "Shares one native implementation and menu state; duplicate script engines are not bundled."
+        },
+        {
+          "source_label": "Long Arms",
+          "status": "merged",
+          "target": "Long Arms",
+          "note": "Shares one native implementation and menu state; duplicate script engines are not bundled."
+        },
+        {
+          "source_label": "Speed Boost",
+          "status": "merged",
+          "target": "Speed Boost",
+          "note": "Shares one native implementation and menu state; duplicate script engines are not bundled."
+        },
+        {
+          "source_label": "No Tag Freeze",
+          "status": "unsupported",
+          "note": "No verified portable SDK equivalent included. No placeholder button is presented as working."
+        },
+        {
+          "source_label": "Exit Fun Mods",
+          "status": "navigation",
+          "target": "Native Home/Back/page arrows",
+          "note": "Consolidated navigation; empty excluded categories are not retained."
+        },
+        {
+          "source_label": "Start new round",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "New round spam [T]",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Half creative mode",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Free Stuff",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "No Restrictions",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Spoof Build Team",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Destroy All Items",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Fling All Items",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Spaz All Items",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Items follow you",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Creative Mode",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Creative Mode 2",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Anti grab",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Unban Self",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Ban Self",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Diddy Mode",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Diddy Button",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Diddy Button 2",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Spawn Item Spam",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Spawn Block Test",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Blackhole Colour",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Pickup All Blocks",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Colour Objects",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Colour Blocks",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Destroy Map",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Make Everything Stuffed",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Rotate Map 90",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Destroy Map Manager",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Knockback Gun",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Add Kick Perms",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Add CW Staff Perms",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Enable Staff Display",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Exit Rig Mods",
+          "status": "navigation",
+          "target": "Native Home/Back/page arrows",
+          "note": "Consolidated navigation; empty excluded categories are not retained."
+        },
+        {
+          "source_label": "Spectator Mode",
+          "status": "unsupported",
+          "note": "No verified portable SDK equivalent included. No placeholder button is presented as working."
+        },
+        {
+          "source_label": "Disable Spectator Mode",
+          "status": "unsupported",
+          "note": "No verified portable SDK equivalent included. No placeholder button is presented as working."
+        },
+        {
+          "source_label": "Fast Roll Speed",
+          "status": "adapted",
+          "target": "Fast Roll Speed",
+          "note": "Optional float field, 2x capped at 40; snapshot restored on Off/room change; no hardcoded 900."
+        },
+        {
+          "source_label": "Exit OP Mods",
+          "status": "navigation",
+          "target": "Native Home/Back/page arrows",
+          "note": "Consolidated navigation; empty excluded categories are not retained."
+        },
+        {
+          "source_label": "Set masterclient",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "auto masterclient",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Destroy All",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Hider Hint Sound",
+          "status": "unsupported",
+          "note": "No verified portable SDK equivalent included. No placeholder button is presented as working."
+        },
+        {
+          "source_label": "Hit Effect Spam",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Send Mobile Cash Out Spam",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Send Mobile Cash Out",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Refresh Map",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Exit Spawner Mods",
+          "status": "navigation",
+          "target": "Native Home/Back/page arrows",
+          "note": "Consolidated navigation; empty excluded categories are not retained."
+        },
+        {
+          "source_label": "Item Spawners",
+          "status": "merged",
+          "target": "Items",
+          "note": "Shares one native implementation and menu state; duplicate script engines are not bundled."
+        },
+        {
+          "source_label": "Exit Dev Mods",
+          "status": "navigation",
+          "target": "Native Home/Back/page arrows",
+          "note": "Consolidated navigation; empty excluded categories are not retained."
+        },
+        {
+          "source_label": "Become CW Staff",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Refresh Network Messenger",
+          "status": "adapted",
+          "target": "Check Room Sender",
+          "note": "Native sends already resolve the current room sender per request; this action checks it without sending anything."
+        },
+        {
+          "source_label": "Object Info Gun",
+          "status": "adapted",
+          "target": "Object Info Gun",
+          "note": "Bounded object name and collider class, not an unbounded component/parent dump."
+        },
+        {
+          "source_label": "Exit Item Mods",
+          "status": "navigation",
+          "target": "Native Home/Back/page arrows",
+          "note": "Consolidated navigation; empty excluded categories are not retained."
+        }
+      ]
+    },
+    {
+      "file": "YeepsMenu.ts",
+      "sha256": "4177a1af50956c0a54d4d78876ea243cd5cfd4d470a9bd92337f8032def03673",
+      "bytes": 106265,
+      "features": [
+        {
+          "source_label": "Settings",
+          "status": "merged",
+          "target": "Settings",
+          "note": "Shares one native implementation and menu state; duplicate script engines are not bundled."
+        },
+        {
+          "source_label": "Movement Mods",
+          "status": "merged",
+          "target": "Movement Mods",
+          "note": "Shares one native implementation and menu state; duplicate script engines are not bundled."
+        },
+        {
+          "source_label": "Fun Mods",
+          "status": "merged",
+          "target": "Effects",
+          "note": "Shares one native implementation and menu state; duplicate script engines are not bundled."
+        },
+        {
+          "source_label": "Advantage Mods",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Utility Mods",
+          "status": "merged",
+          "target": "Utility Mods",
+          "note": "Shares one native implementation and menu state; duplicate script engines are not bundled."
+        },
+        {
+          "source_label": "Disconnect",
+          "status": "unsupported",
+          "note": "No verified portable SDK equivalent included. No placeholder button is presented as working."
+        },
+        {
+          "source_label": "PreviousPage",
+          "status": "navigation",
+          "target": "Native Home/Back/page arrows",
+          "note": "Consolidated navigation; empty excluded categories are not retained."
+        },
+        {
+          "source_label": "NextPage",
+          "status": "navigation",
+          "target": "Native Home/Back/page arrows",
+          "note": "Consolidated navigation; empty excluded categories are not retained."
+        },
+        {
+          "source_label": "Exit Settings",
+          "status": "navigation",
+          "target": "Native Home/Back/page arrows",
+          "note": "Consolidated navigation; empty excluded categories are not retained."
+        },
+        {
+          "source_label": "Change Menu Theme",
+          "status": "merged",
+          "target": "Change Menu Theme",
+          "note": "Shares one native implementation and menu state; duplicate script engines are not bundled."
+        },
+        {
+          "source_label": "Change Pointer Position",
+          "status": "merged",
+          "target": "Change Pointer Position",
+          "note": "Shares one native implementation and menu state; duplicate script engines are not bundled."
+        },
+        {
+          "source_label": "Iron Man Speed",
+          "status": "merged",
+          "target": "Iron Man Speed",
+          "note": "Shares one native implementation and menu state; duplicate script engines are not bundled."
+        },
+        {
+          "source_label": "Exit Movement Mods",
+          "status": "navigation",
+          "target": "Native Home/Back/page arrows",
+          "note": "Consolidated navigation; empty excluded categories are not retained."
+        },
+        {
+          "source_label": "Platforms",
+          "status": "merged",
+          "target": "Platforms",
+          "note": "Shares one native implementation and menu state; duplicate script engines are not bundled."
+        },
+        {
+          "source_label": "Fly",
+          "status": "merged",
+          "target": "Fly",
+          "note": "Shares one native implementation and menu state; duplicate script engines are not bundled."
+        },
+        {
+          "source_label": "Velocity Fly",
+          "status": "merged",
+          "target": "Velocity Fly",
+          "note": "Shares one native implementation and menu state; duplicate script engines are not bundled."
+        },
+        {
+          "source_label": "Teleport Gun",
+          "status": "merged",
+          "target": "Teleport Gun",
+          "note": "Shares one native implementation and menu state; duplicate script engines are not bundled."
+        },
+        {
+          "source_label": "Iron Man",
+          "status": "merged",
+          "target": "Iron Man",
+          "note": "Shares one native implementation and menu state; duplicate script engines are not bundled."
+        },
+        {
+          "source_label": "Noclip",
+          "status": "merged",
+          "target": "Noclip",
+          "note": "Shares one native implementation and menu state; duplicate script engines are not bundled."
+        },
+        {
+          "source_label": "Long Arms",
+          "status": "merged",
+          "target": "Long Arms",
+          "note": "Shares one native implementation and menu state; duplicate script engines are not bundled."
+        },
+        {
+          "source_label": "Speed Boost",
+          "status": "merged",
+          "target": "Speed Boost",
+          "note": "Shares one native implementation and menu state; duplicate script engines are not bundled."
+        },
+        {
+          "source_label": "No Tag Freeze",
+          "status": "unsupported",
+          "note": "No verified portable SDK equivalent included. No placeholder button is presented as working."
+        },
+        {
+          "source_label": "Exit Fun Mods",
+          "status": "navigation",
+          "target": "Native Home/Back/page arrows",
+          "note": "Consolidated navigation; empty excluded categories are not retained."
+        },
+        {
+          "source_label": "Spectator Mode",
+          "status": "unsupported",
+          "note": "No verified portable SDK equivalent included. No placeholder button is presented as working."
+        },
+        {
+          "source_label": "Disable Spectator Mode",
+          "status": "unsupported",
+          "note": "No verified portable SDK equivalent included. No placeholder button is presented as working."
+        },
+        {
+          "source_label": "Test",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Refresh Network Messenger",
+          "status": "adapted",
+          "target": "Check Room Sender",
+          "note": "Native sends already resolve the current room sender per request; this action checks it without sending anything."
+        },
+        {
+          "source_label": "Refresh Map",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Hider Hint Sound",
+          "status": "unsupported",
+          "note": "No verified portable SDK equivalent included. No placeholder button is presented as working."
+        },
+        {
+          "source_label": "Hit Effect Spam",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Send Mobile Cash Out",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Enter Creative Mode",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Enter Play Mode",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "No Gravity",
+          "status": "merged",
+          "target": "No Gravity",
+          "note": "Shares one native implementation and menu state; duplicate script engines are not bundled."
+        },
+        {
+          "source_label": "Flip Gravity",
+          "status": "adapted",
+          "target": "Flip Gravity (Local)",
+          "note": "Bounded upward velocity adjustment only for the local player; never changes global Physics.gravity."
+        },
+        {
+          "source_label": "Free Stuff",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Bring All Items",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Destroy All Items",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Destroy Map Object Gun",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Unban Self",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Ban Self",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Color Map Object Gun",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Color All Map Objects",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Redeem All Butt Coin Stashes",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Destroy All Map Objects",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Become CW Staff",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Fast Roll Speed",
+          "status": "adapted",
+          "target": "Fast Roll Speed",
+          "note": "Optional float field, 2x capped at 40; snapshot restored on Off/room change; no hardcoded 900."
+        },
+        {
+          "source_label": "Spawn Block Test",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Reset Network Messenger",
+          "status": "unsupported",
+          "note": "No verified portable SDK equivalent included. No placeholder button is presented as working."
+        },
+        {
+          "source_label": "Remove All Stuffing",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Add Max Stuffing",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Call Vote",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "TestS",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Knockback Gun",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Destroy Item Gun",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Exit Advantage Mods",
+          "status": "navigation",
+          "target": "Native Home/Back/page arrows",
+          "note": "Consolidated navigation; empty excluded categories are not retained."
+        },
+        {
+          "source_label": "Master Client",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Destroy All",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Lag All",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Exit Utility Mods",
+          "status": "navigation",
+          "target": "Native Home/Back/page arrows",
+          "note": "Consolidated navigation; empty excluded categories are not retained."
+        },
+        {
+          "source_label": "Spawn Mob",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Spawn Mob Gun",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Get Sign Text Gun",
+          "status": "ported",
+          "target": "Get Sign Text Gun",
+          "note": "Optional runtime bindings fail closed when unavailable."
+        },
+        {
+          "source_label": "Save MapObj Coordinate Gun",
+          "status": "adapted",
+          "target": "Save MapObj Coordinate Gun",
+          "note": "Saves world transform origin plus a safe standing offset to Save Spot. Does not copy unknown grid-struct layouts."
+        },
+        {
+          "source_label": "Get Dispenser Item Gun",
+          "status": "adapted",
+          "target": "Dispenser Info Gun",
+          "note": "The source item-reading body is commented out. This only confirms a dispenser component; does not extract its item."
+        },
+        {
+          "source_label": "Get Item Gun",
+          "status": "ported",
+          "target": "Get Item Gun",
+          "note": "Optional runtime bindings fail closed when unavailable."
+        },
+        {
+          "source_label": "Get Map Object Gun",
+          "status": "adapted",
+          "target": "Get Map Object Gun",
+          "note": "Reads the public map key, not every color/dimension property."
+        },
+        {
+          "source_label": "Get Mob Data Gun",
+          "status": "ported",
+          "target": "Get Mob Data Gun",
+          "note": "Optional runtime bindings fail closed when unavailable."
+        },
+        {
+          "source_label": "Get Tech Web Connection Gun",
+          "status": "adapted",
+          "target": "Get Tech Web Connection Gun",
+          "note": "Read-only public pattern label; the source refund action is not included."
+        },
+        {
+          "source_label": "Test Dispenser Item Gun",
+          "status": "unsupported",
+          "note": "No verified portable SDK equivalent included. No placeholder button is presented as working."
+        },
+        {
+          "source_label": "Unlock MG Gun",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Clear Mobs",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "100 Player Lobby",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Unlock All",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        }
+      ]
+    },
+    {
+      "file": "yeepsmenuD.ts",
+      "sha256": "009a9ff5655d046785e9dc74bf11a4244e0ec3e2d7f6b7d630184ce989963104",
+      "bytes": 26026,
+      "features": [
+        {
+          "source_label": "Assembly-CSharp metadata dump",
+          "status": "adapted",
+          "target": "Next Metadata Class / Next Metadata Members",
+          "note": "Manual paged class/member-name browser; no whole-domain dump, field values, account state, files or scripts."
+        }
+      ]
+    },
+    {
+      "file": "IIStupidYeepsMenu.ts",
+      "sha256": "2a8bff7dba54a00ac2922c0cb99e7a6dfa62eecc28b40970bb9e1135b29222ee",
+      "bytes": 108652,
+      "features": [
+        {
+          "source_label": "Settings",
+          "status": "merged",
+          "target": "Settings",
+          "note": "Shares one native implementation and menu state; duplicate script engines are not bundled."
+        },
+        {
+          "source_label": "Movement Mods",
+          "status": "merged",
+          "target": "Movement Mods",
+          "note": "Shares one native implementation and menu state; duplicate script engines are not bundled."
+        },
+        {
+          "source_label": "Fun Mods",
+          "status": "merged",
+          "target": "Effects",
+          "note": "Shares one native implementation and menu state; duplicate script engines are not bundled."
+        },
+        {
+          "source_label": "Advantage Mods",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Utility Mods",
+          "status": "merged",
+          "target": "Utility Mods",
+          "note": "Shares one native implementation and menu state; duplicate script engines are not bundled."
+        },
+        {
+          "source_label": "Disconnect",
+          "status": "unsupported",
+          "note": "No verified portable SDK equivalent included. No placeholder button is presented as working."
+        },
+        {
+          "source_label": "PreviousPage",
+          "status": "navigation",
+          "target": "Native Home/Back/page arrows",
+          "note": "Consolidated navigation; empty excluded categories are not retained."
+        },
+        {
+          "source_label": "NextPage",
+          "status": "navigation",
+          "target": "Native Home/Back/page arrows",
+          "note": "Consolidated navigation; empty excluded categories are not retained."
+        },
+        {
+          "source_label": "Exit Settings",
+          "status": "navigation",
+          "target": "Native Home/Back/page arrows",
+          "note": "Consolidated navigation; empty excluded categories are not retained."
+        },
+        {
+          "source_label": "Change Menu Theme",
+          "status": "merged",
+          "target": "Change Menu Theme",
+          "note": "Shares one native implementation and menu state; duplicate script engines are not bundled."
+        },
+        {
+          "source_label": "Change Pointer Position",
+          "status": "merged",
+          "target": "Change Pointer Position",
+          "note": "Shares one native implementation and menu state; duplicate script engines are not bundled."
+        },
+        {
+          "source_label": "Iron Man Speed",
+          "status": "merged",
+          "target": "Iron Man Speed",
+          "note": "Shares one native implementation and menu state; duplicate script engines are not bundled."
+        },
+        {
+          "source_label": "Exit Movement Mods",
+          "status": "navigation",
+          "target": "Native Home/Back/page arrows",
+          "note": "Consolidated navigation; empty excluded categories are not retained."
+        },
+        {
+          "source_label": "Platforms",
+          "status": "merged",
+          "target": "Platforms",
+          "note": "Shares one native implementation and menu state; duplicate script engines are not bundled."
+        },
+        {
+          "source_label": "Fly",
+          "status": "merged",
+          "target": "Fly",
+          "note": "Shares one native implementation and menu state; duplicate script engines are not bundled."
+        },
+        {
+          "source_label": "Teleport Gun",
+          "status": "merged",
+          "target": "Teleport Gun",
+          "note": "Shares one native implementation and menu state; duplicate script engines are not bundled."
+        },
+        {
+          "source_label": "Iron Man",
+          "status": "merged",
+          "target": "Iron Man",
+          "note": "Shares one native implementation and menu state; duplicate script engines are not bundled."
+        },
+        {
+          "source_label": "Noclip",
+          "status": "merged",
+          "target": "Noclip",
+          "note": "Shares one native implementation and menu state; duplicate script engines are not bundled."
+        },
+        {
+          "source_label": "Long Arms",
+          "status": "merged",
+          "target": "Long Arms",
+          "note": "Shares one native implementation and menu state; duplicate script engines are not bundled."
+        },
+        {
+          "source_label": "Speed Boost",
+          "status": "merged",
+          "target": "Speed Boost",
+          "note": "Shares one native implementation and menu state; duplicate script engines are not bundled."
+        },
+        {
+          "source_label": "No Tag Freeze",
+          "status": "unsupported",
+          "note": "No verified portable SDK equivalent included. No placeholder button is presented as working."
+        },
+        {
+          "source_label": "Exit Fun Mods",
+          "status": "navigation",
+          "target": "Native Home/Back/page arrows",
+          "note": "Consolidated navigation; empty excluded categories are not retained."
+        },
+        {
+          "source_label": "Spectator Mode",
+          "status": "unsupported",
+          "note": "No verified portable SDK equivalent included. No placeholder button is presented as working."
+        },
+        {
+          "source_label": "Disable Spectator Mode",
+          "status": "unsupported",
+          "note": "No verified portable SDK equivalent included. No placeholder button is presented as working."
+        },
+        {
+          "source_label": "Test",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Refresh Network Messenger",
+          "status": "adapted",
+          "target": "Check Room Sender",
+          "note": "Native sends already resolve the current room sender per request; this action checks it without sending anything."
+        },
+        {
+          "source_label": "Refresh Map",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Hider Hint Sound",
+          "status": "unsupported",
+          "note": "No verified portable SDK equivalent included. No placeholder button is presented as working."
+        },
+        {
+          "source_label": "Hit Effect Spam",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Send Mobile Cash Out",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Enter Creative Mode",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Enter Play Mode",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "No Gravity",
+          "status": "merged",
+          "target": "No Gravity",
+          "note": "Shares one native implementation and menu state; duplicate script engines are not bundled."
+        },
+        {
+          "source_label": "Flip Gravity",
+          "status": "adapted",
+          "target": "Flip Gravity (Local)",
+          "note": "Bounded upward velocity adjustment only for the local player; never changes global Physics.gravity."
+        },
+        {
+          "source_label": "Free Stuff",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Bring All Items",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Destroy All Items",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Destroy Map Object Gun",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Set Ban",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Color Map Object Gun",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Color All Map Objects",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Redeem All Butt Coin Stashes",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Destroy All Map Objects",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Fast Roll Speed",
+          "status": "adapted",
+          "target": "Fast Roll Speed",
+          "note": "Optional float field, 2x capped at 40; snapshot restored on Off/room change; no hardcoded 900."
+        },
+        {
+          "source_label": "Spawn Block Test",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Text Input Test",
+          "status": "unsupported",
+          "note": "No verified portable SDK equivalent included. No placeholder button is presented as working."
+        },
+        {
+          "source_label": "Anonymous",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Reset Network Messenger",
+          "status": "unsupported",
+          "note": "No verified portable SDK equivalent included. No placeholder button is presented as working."
+        },
+        {
+          "source_label": "Remove All Stuffing",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Add Max Stuffing",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Call Vote",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "TestS",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Knockback Gun",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Destroy Item Gun",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Exit Advantage Mods",
+          "status": "navigation",
+          "target": "Native Home/Back/page arrows",
+          "note": "Consolidated navigation; empty excluded categories are not retained."
+        },
+        {
+          "source_label": "Master Client",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Destroy All",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Lag All",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Exit Utility Mods",
+          "status": "navigation",
+          "target": "Native Home/Back/page arrows",
+          "note": "Consolidated navigation; empty excluded categories are not retained."
+        },
+        {
+          "source_label": "Spawn Mob",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Spawn Mob Gun",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Get Sign Text Gun",
+          "status": "ported",
+          "target": "Get Sign Text Gun",
+          "note": "Optional runtime bindings fail closed when unavailable."
+        },
+        {
+          "source_label": "Save MapObj Coordinate Gun",
+          "status": "adapted",
+          "target": "Save MapObj Coordinate Gun",
+          "note": "Saves world transform origin plus a safe standing offset to Save Spot. Does not copy unknown grid-struct layouts."
+        },
+        {
+          "source_label": "Get Dispenser Item Gun",
+          "status": "adapted",
+          "target": "Dispenser Info Gun",
+          "note": "The source item-reading body is commented out. This only confirms a dispenser component; does not extract its item."
+        },
+        {
+          "source_label": "Get Item Gun",
+          "status": "ported",
+          "target": "Get Item Gun",
+          "note": "Optional runtime bindings fail closed when unavailable."
+        },
+        {
+          "source_label": "Get Map Object Gun",
+          "status": "adapted",
+          "target": "Get Map Object Gun",
+          "note": "Reads the public map key, not every color/dimension property."
+        },
+        {
+          "source_label": "Get Mob Data Gun",
+          "status": "ported",
+          "target": "Get Mob Data Gun",
+          "note": "Optional runtime bindings fail closed when unavailable."
+        },
+        {
+          "source_label": "Get Tech Web Connection Gun",
+          "status": "adapted",
+          "target": "Get Tech Web Connection Gun",
+          "note": "Read-only public pattern label; the source refund action is not included."
+        },
+        {
+          "source_label": "Test Dispenser Item Gun",
+          "status": "unsupported",
+          "note": "No verified portable SDK equivalent included. No placeholder button is presented as working."
+        },
+        {
+          "source_label": "Unlock MG Gun",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Clear Mobs",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "100 Player Lobby",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        },
+        {
+          "source_label": "Unlock All",
+          "status": "excluded",
+          "note": "Not carried over: destructive/shared-world mutation, moderation/identity/economy changes, direct network control/instantiation, automatic sends, or unknown unsafe behavior."
+        }
+      ]
+    }
+  ]
+}

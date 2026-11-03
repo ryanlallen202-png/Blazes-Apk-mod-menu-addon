@@ -3,6 +3,8 @@ Run: python3 mods/dark-matter/tests/test_soundboard.py
 """
 import pathlib
 import os
+import json
+import re
 import shutil
 import struct
 import subprocess
@@ -15,6 +17,49 @@ NATIVE_FLAGS = (["-fsanitize=address,undefined", "-fno-omit-frame-pointer", "-g"
 
 
 class SoundboardTests(unittest.TestCase):
+    def test_combined_port_inventory(self):
+        menu = SOURCE.read_text()
+        ports = (SOURCE.parent / "CombinedPorts.hpp").read_text()
+        manifest = json.loads((SOURCE.parents[1] / "combined-ports.json").read_text())
+        self.assertEqual({s["file"] for s in manifest["sources"]},
+                         {"ym.ts", "YeepsMenu.ts", "yeepsmenuD.ts", "IIStupidYeepsMenu.ts"})
+        self.assertEqual(manifest["output"], "diddy-client.so")
+        self.assertIn(manifest["version"], menu)
+        self.assertEqual(menu.count("YM_EXPORT int YeepsMod_Init("), 1)
+        self.assertEqual(menu.count("ym::onUpdate(OnUpdate)"), 1)
+        labels = set(re.findall(r'\{[A-Z_]+, "([^"]+)"', menu))
+        for source in manifest["sources"]:
+            self.assertRegex(source["sha256"], r"^[a-f0-9]{64}$")
+            self.assertGreater(source["bytes"], 0)
+            for feature in source["features"]:
+                self.assertIn(feature["status"], {"merged", "ported", "adapted", "navigation", "unsupported", "excluded"})
+                if feature["status"] in {"merged", "ported", "adapted"}:
+                    for label in feature["target"].split(" / "):
+                        self.assertIn(label, labels)
+        for forbidden in ("PhotonNetwork", "TryRefund", "SetIsSpectatorMode", "Il2Cpp.$config"):
+            self.assertNotIn(forbidden, ports)
+        self.assertIn("CombinedMovementReset();", menu[menu.index("static void OnRoomChange() {"):])
+        self.assertIn("g_utilitySelected < 0 && in.rtrig", menu)
+        self.assertIn("printed < 4", ports)
+        self.assertIn("g_time + 0.6", ports)
+
+    def test_combined_native_movement(self):
+        compiler = shutil.which("c++")
+        if not compiler:
+            self.skipTest("A host C++ compiler is required")
+        code = (SOURCE.parent / "CombinedPorts.hpp").read_text()
+        section = code[code.index("static Ref g_frozenTransform"):code.index("// ---- read-only TS utility tools")]
+        with tempfile.TemporaryDirectory() as directory:
+            tmp = pathlib.Path(directory)
+            (tmp / "combined_movement.inc").write_text(section)
+            selection = code[code.index("static void PrimaryGunPicked()"):code.index("static void UtilityTick(")]
+            (tmp / "combined_selection.inc").write_text(selection)
+            exe = tmp / "combined_movement"
+            subprocess.run([compiler, "-std=c++20", *NATIVE_FLAGS, "-Wall", "-Wextra", "-Werror",
+                            "-I" + str(SOURCE.parent), "-I" + directory,
+                            str(pathlib.Path(__file__).with_name("combined_movement_test.cpp")), "-o", str(exe)], check=True)
+            subprocess.run([str(exe)], check=True)
+
     def test_voice_lifecycle(self):
         """Execute actual routing/restoration code against a fault-injecting SDK mock."""
         compiler = shutil.which("c++")
