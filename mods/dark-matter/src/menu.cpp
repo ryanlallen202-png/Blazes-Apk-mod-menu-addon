@@ -2157,7 +2157,7 @@ static void SoundLoadTick() {
     g_soundLoadStage = 3;
     memcpy(managedData, source, samplesNow * sizeof(float));
     g_soundLoadStage = 4;
-    if (!G.audioClipSetData[g_soundClip.get()](arr, (int)g_soundLoadOffset)) {
+    if (!G.audioClipSetData[g_soundClip.get()](arr, (int)(g_soundLoadOffset * g_soundLoadChannels))) {
         g_soundLoadStage = 0; StopSound(); Notify("Unity rejected sound data"); return;
     }
     g_soundLoadStage = 0;
