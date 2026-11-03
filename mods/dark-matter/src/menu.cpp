@@ -123,7 +123,7 @@ static struct {
     Method<bool> recorderRestart;
     Method<Il2CppObject *> recorderGetAudioClip;
     Method<bool> recorderGetLoopAudioClip, recorderGetVoiceDetection, recorderGetTransmitEnabled,
-                 recorderGetTransmitting, recorderGetRecording;
+                 recorderGetRecording;
     Method<void> recorderSetVoiceDetection, recorderSetRecording;
     Method<void> goSetLayer;
     BNM::MonoType *tRigidbody = nullptr, *tCollider = nullptr, *tCanvas = nullptr, *tText = nullptr,
@@ -170,7 +170,6 @@ static bool Lookups() {
         G.recorderGetVoiceDetection = recorder.GetMethod("get_VoiceDetection", 0);
         G.recorderSetVoiceDetection = recorder.GetMethod("set_VoiceDetection", 1);
         G.recorderGetTransmitEnabled = recorder.GetMethod("get_TransmitEnabled", 0);
-        G.recorderGetTransmitting = recorder.GetMethod("get_IsCurrentlyTransmitting", 0);
         G.recorderGetRecording = recorder.GetMethod("get_RecordingEnabled", 0);
         if (!G.recorderGetRecording.IsValid()) G.recorderGetRecording = recorder.GetMethod("get_IsRecording", 0);
         G.recorderSetRecording = recorder.GetMethod("set_RecordingEnabled", 1);
@@ -1844,10 +1843,6 @@ static std::string ModsSoundPath() {
 }
 static double g_soundEnd = 0, g_soundStarted = 0, g_nextSoundPlay = 0;
 static bool g_soundActive = false, g_soundRemote = false;
-static std::vector<float> g_soundPcm;
-static size_t g_soundFramesTotal = 0, g_soundFramesQueued = 0;
-static int g_soundChannels = 0, g_soundSampleRate = 0;
-static constexpr size_t kSoundChunkFrames = 4096;
 static Ref g_soundRecorder, g_oldRecorderClip;
 static int g_oldSourceType = 0;
 static bool g_oldLoop = false, g_oldVoiceDetection = false, g_oldRecording = false;
@@ -1882,9 +1877,6 @@ static void StopSound() {
     g_soundActive = false;
     g_soundEnd = 0;
     g_soundStarted = 0;
-    std::vector<float>().swap(g_soundPcm);
-    g_soundFramesTotal = g_soundFramesQueued = 0;
-    g_soundChannels = g_soundSampleRate = 0;
 }
 static void ScanSounds() {
     g_soundDirectory = ModsSoundPath();
@@ -2030,7 +2022,6 @@ static void PlaySound() {
     }
 
     g_soundActive = true;
-    g_soundStarted = g_time;
     double duration = (double)frames / (double)sampleRate;
     g_soundEnd = g_time + duration + 0.2;
     g_nextSoundPlay = g_time + fmax(1.0, duration);
