@@ -359,6 +359,11 @@ static std::vector<std::string> g_soundFiles;
 static std::string g_soundDirectory;
 static size_t g_soundIndex = 0;
 static float g_soundVolume = 0.75f;
+static std::vector<float> g_soundPcm;
+static size_t g_soundLoadOffset = 0;
+static int g_soundLoadChannels = 0;
+static int g_soundLoadFrames = 0;
+static int g_soundLastProgress = -1;
 static Ref g_player, g_rigidbody, g_leftHand, g_rightHand, g_head;
 static Vector3 g_spot;
 static bool g_haveSpot = false;
@@ -1616,6 +1621,10 @@ static void ScanSounds() {
     Notify("Found %d WAV files", (int)g_soundFiles.size());
 }
 static void StopSound() {
+    g_soundPcm.clear();
+    g_soundLoadOffset = 0;
+    g_soundLoadChannels = g_soundLoadFrames = 0;
+    g_soundLastProgress = -1;
     if (Alive(g_soundSource.get()) && G.audioSourceStop.IsValid()) G.audioSourceStop[g_soundSource.get()]();
     if (Alive(g_soundSource.get()) && G.audioSourceSetClip.IsValid()) G.audioSourceSetClip[g_soundSource.get()](nullptr);
     Kill(g_soundClip);
@@ -1661,31 +1670,57 @@ static void PlaySound() {
         int16_t v = (int16_t)Read16(bytes, w.dataOffset + i * 2);
         pcm[i] = (float)v / 32768.0f;
     }
-    void *managed = G.arrayNew(Class("System", "Single").GetClass(), (uintptr_t)count);
-    if (!managed) { Notify("Could not allocate audio buffer"); return; }
-    memcpy((uint8_t *)managed + 0x20, pcm.data(), count * sizeof(float));
     StopSound();
     Il2CppObject *clip = G.audioClipCreate(CreateMonoString("DARK MATTER Sound"),
         (int)frames, w.channels, w.sampleRate, false);
-    if (!clip || !G.audioClipSetData[clip](managed, 0)) {
-        if (clip) G.destroy(clip);
-        Notify("Could not create audio clip"); return;
-    }
+    if (!clip) { Notify("Could not create audio clip"); return; }
     g_soundClip.set(clip);
-    if (!Alive(g_soundSource.get())) {
-        Il2CppObject *go = Class("UnityEngine", "GameObject").CreateNewObjectParameters(CreateMonoString("DARK MATTER Soundboard"));
-        Il2CppObject *source = go ? G.goAddComponent[go](G.tAudioSource) : nullptr;
-        if (!source) { if (go) G.destroy(go); Kill(g_soundClip); Notify("Could not create audio source"); return; }
-        g_soundSource.set(source);
-        if (g_head.get()) G.trSetParent[Tr(go)](Tr(g_head.get()), false);
-        G.audioSourceSetSpatialBlend[source](0.0f); // 2D, local headset playback
+    g_soundPcm = std::move(pcm);
+    g_soundLoadChannels = w.channels;
+    g_soundLoadFrames = (int)frames;
+    g_soundLoadOffset = 0;
+    g_soundLastProgress = -1;
+    Notify("Loading sound: 0%%");
+}
+
+
+static void SoundLoadTick() {
+    if (g_soundPcm.empty() || !Alive(g_soundClip)) return;
+    const size_t total = g_soundPcm.size();
+    const size_t framesLeft = (size_t)g_soundLoadFrames - g_soundLoadOffset;
+    const size_t framesNow = framesLeft < 4096 ? framesLeft : 4096;
+    const size_t samplesNow = framesNow * (size_t)g_soundLoadChannels;
+    Il2CppObject *arr = (Il2CppObject *)G.arrayNew(Class("System", "Single").GetClass(), (uintptr_t)samplesNow);
+    if (!arr) { StopSound(); Notify("Not enough memory to load sound"); return; }
+    memcpy((uint8_t *)arr + 0x20, g_soundPcm.data() + g_soundLoadOffset * g_soundLoadChannels,
+           samplesNow * sizeof(float));
+    if (!G.audioClipSetData[g_soundClip.get()](arr, (int)g_soundLoadOffset)) {
+        StopSound(); Notify("Could not finish loading sound"); return;
     }
-    G.audioSourceSetVolume[g_soundSource.get()](g_soundVolume);
-    G.audioSourceSetClip[g_soundSource.get()](clip);
-    G.audioSourcePlay[g_soundSource.get()]();
-    const std::string &p = g_soundFiles[g_soundIndex];
-    size_t slash = p.find_last_of('/');
-    Notify("Playing: %s", slash == std::string::npos ? p.c_str() : p.c_str() + slash + 1);
+    g_soundLoadOffset += framesNow;
+    int progress = (int)(g_soundLoadOffset * 100 / (size_t)g_soundLoadFrames);
+    if (progress / 10 != g_soundLastProgress) {
+        g_soundLastProgress = progress / 10;
+        Notify("Loading sound: %d%%", progress);
+    }
+    if (g_soundLoadOffset >= (size_t)g_soundLoadFrames) {
+        g_soundPcm.clear();
+        g_soundPcm.shrink_to_fit();
+        if (!Alive(g_soundSource.get())) {
+            Il2CppObject *go = Class("UnityEngine", "GameObject").CreateNewObjectParameters(CreateMonoString("DARK MATTER Soundboard"));
+            Il2CppObject *source = go ? G.goAddComponent[go](G.tAudioSource) : nullptr;
+            if (!source) { if (go) G.destroy(go); Kill(g_soundClip); Notify("Could not create audio source"); return; }
+            g_soundSource.set(source);
+            if (g_head.get()) G.trSetParent[Tr(go)](Tr(g_head.get()), false);
+            G.audioSourceSetSpatialBlend[source](0.0f);
+        }
+        G.audioSourceSetVolume[g_soundSource.get()](g_soundVolume);
+        G.audioSourceSetClip[g_soundSource.get()](g_soundClip.get());
+        G.audioSourcePlay[g_soundSource.get()]();
+        const std::string &p = g_soundFiles[g_soundIndex];
+        size_t slash = p.find_last_of('/');
+        Notify("Playing: %s", slash == std::string::npos ? p.c_str() : p.c_str() + slash + 1);
+    }
 }
 
 static void OnUpdate(float dt) {
@@ -1708,6 +1743,7 @@ static void OnUpdate(float dt) {
         if (pgo) g_rigidbody.set(G.goGetComponent[pgo](G.tRigidbody));
     }
     if (!g_leftHand.get() || !g_rightHand.get() || !g_head.get()) return;
+    SoundLoadTick();
     if (!g_built) { BuildMenu(); ScanSounds(); }
 
     Buttons in = ReadButtons();
