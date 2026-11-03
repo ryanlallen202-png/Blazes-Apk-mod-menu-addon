@@ -268,7 +268,7 @@ int main(int argc, char **argv) {
         source = SOURCE.read_text()
         self.assertIn('Overload(aclip, "SetData", {"System.Single[]", "System.Int32"})', source)
         self.assertNotIn('aclip.GetMethod("SetData", 2)', source)
-        self.assertIn('Overload(go, ".ctor", {"System.String"})', source)
+        self.assertNotIn("G.soundGameObjectCtor", source)
         self.assertNotIn('G.voiceRestartRecording', source)
         playback_start = source.index("static bool StartVoicePlayback")
         playback = source[playback_start:source.index("// ---- soundboard playback", playback_start)]
@@ -282,6 +282,24 @@ int main(int argc, char **argv) {
                         restore.index("AudioCall<void>(G.voiceSetAudioClip, recorder"))
         self.assertLess(restore.index("AudioCall<void>(G.voiceSetSourceType, recorder"),
                         restore.index("AudioCall<void>(G.voiceStartRecording, recorder)"))
+
+    def test_staged_playback_handoff(self):
+        source = SOURCE.read_text()
+        start = source.index("static void SoundStartTick() {")
+        handoff = source[start:source.index("static void SoundLoadTick() {", start)]
+        self.assertNotIn("CreateNewInstance", handoff)
+        self.assertNotIn("CreateNewObject", handoff)
+        self.assertIn("AudioCall<Il2CppObject *>(G.compGameObject, g_head.get())", handoff)
+        self.assertIn("AudioCall<Il2CppObject *>(G.goAddComponent, host, G.tAudioSource)", handoff)
+        self.assertIn("case SoundStartPhase::Source:", handoff)
+        self.assertIn("case SoundStartPhase::Local:", handoff)
+        self.assertIn("case SoundStartPhase::Voice:", handoff)
+        self.assertIn("Kill(g_soundSource)", source)
+        upload = source[source.index("static void SoundLoadTick() {"):source.index("// ---- effects: snow")]
+        self.assertNotIn("StartVoicePlayback", upload)
+        self.assertNotIn("G.asPlay", upload)
+        stop = source[source.index("static void StopSound() {"):source.index("static void SoundVolumeUp() {")]
+        self.assertIn("g_soundStartPhase = SoundStartPhase::Idle", stop)
 
     def test_upload_and_playback_guards(self):
         source = SOURCE.read_text()

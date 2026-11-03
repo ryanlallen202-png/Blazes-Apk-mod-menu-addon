@@ -38,7 +38,7 @@ build/test-venv/bin/pip install lameenc==1.9.0
 build/test-venv/bin/python mods/dark-matter/tests/test_soundboard.py
 ```
 
-All eight tests passed in the development sandbox, including runtime-call argument marshalling, GC-handle replacement, exact audio overload selection, recorder ordering, and startup retry guards. They do not run Unity or Photon Voice. Android compilation requires the NDK; room audio and microphone restoration must be tested on a headset with another consenting listener.
+All nine tests passed in the development sandbox, including runtime-call argument marshalling, GC-handle replacement, exact audio overload selection, recorder ordering, and startup retry guards. They do not run Unity or Photon Voice. Android compilation requires the NDK; room audio and microphone restoration must be tested on a headset with another consenting listener.
 
 ## Playback crash diagnostics
 
@@ -85,3 +85,11 @@ Clip allocation and the first PCM upload happen in separate update frames. Addit
 **Test Tone (Local)** plays a quiet 0.25-second 440 Hz tone through the same Unity clip/upload/AudioSource path, without reading files, invoking a decoder or changing voice chat. Normal filename buttons retain room-audio routing. To help isolate the remaining fault, report whether this local tone also crashes, whether file loading reaches 100%, and the final `dark-matter sound:` lines from `bnm_checkpoint.txt`. Do not repeatedly relaunch a build that crashes on entry; remove its `.so` to recover first.
 
 The build and host tests cannot establish on-device playback correctness. No headset result has been collected for this revision.
+
+## Playback Handoff Fix 7: crash immediately after 100%
+
+The reported timing is after the final PCM upload. Fix 7 removes soundboard GameObject allocation and manual construction from that handoff. It adds a dedicated AudioSource component to the existing active head GameObject instead; it never takes over an existing game AudioSource and never destroys the player/head GameObject. Room cleanup destroys only the added component.
+
+Upload completion, source setup, local playback and voice routing now occur on separate update frames. A pending start is treated as busy, Stop cancels it, and playback cooldowns begin at playback rather than upload completion. Normal filename buttons still request room playback; the local test tone still bypasses voice.
+
+Checkpoints now report `source stage`, `local start stage`, and `voice stage`. Please report whether **Test Tone (Local)** crashes too, and provide the last `dark-matter sound:` lines if it does. The exact native crash cause has not been confirmed without headset logs. Host tests check source ownership and handoff structure; compilation alone does not establish that headset playback is fixed.

@@ -37,7 +37,7 @@ using namespace BNM::Structures::Unity;
 using BNM::IL2CPP::Il2CppObject;
 
 YEEPS_MOD("DARK MATTER")
-#define DM_VERSION "Audio Invoke Guard 6"
+#define DM_VERSION "Playback Handoff Fix 7"
 
 // ---- small helpers ---------------------------------------------------------
 
@@ -152,8 +152,6 @@ static struct {
     Method<void> pvRpc;
     Method<Il2CppObject *> audioClipCreate, applicationPersistentPath; // decoded sound clips
     Method<bool> audioClipSetData;
-    Class soundGameObjectClass;
-    Method<void> soundGameObjectCtor;
     Field<Il2CppObject *> voiceConnection;
     Method<Il2CppObject *> voicePrimaryRecorder, voiceGetAudioClip;
     Method<int> voiceGetSourceType;
@@ -206,8 +204,6 @@ static bool Lookups() {
           graphic("UnityEngine.UI", "Graphic"), canvas("UnityEngine", "Canvas"), rt("UnityEngine", "RectTransform"),
           dev("UnityEngine.XR", "InputDevices"), player("", "MasterPlayer", Image("Assembly-CSharp.dll"));
     if (!go || !tr || !player || !dev) { ym::log("dark-matter: game classes missing"); return false; }
-    G.soundGameObjectClass = go;
-    G.soundGameObjectCtor = Overload(go, ".ctor", {"System.String"});
     G.createPrimitive = go.GetMethod("CreatePrimitive", 1);
     G.goTransform = go.GetMethod("get_transform", 0);
     G.goGetComponent = Overload(go, "GetComponent", {"System.Type"});
@@ -499,7 +495,10 @@ static Buttons ReadButtons() {
 static bool f_velocityFly, f_ironMan, f_tpGun, f_noclip, f_speedBoost, f_noGravity;
 static bool f_itemGun, f_spawnOnHand, f_car, f_stickFly, f_dash;
 static bool f_longArms, f_superSpeed, f_megaJump, f_superFly, f_rocket, f_grapple, f_groundPound, f_flingGun, f_propGun, f_bounce;   // Overpowered
-static Ref g_soundObject, g_soundSource, g_soundClip;
+static Ref g_soundSource, g_soundClip;
+enum class SoundStartPhase { Idle, Source, Local, Voice };
+static SoundStartPhase g_soundStartPhase = SoundStartPhase::Idle;
+static bool g_soundLocalStarted = false;
 static std::vector<std::string> g_soundFiles;
 static size_t g_soundIndex = 0;
 static std::string g_soundPlayingPath;
@@ -2092,6 +2091,8 @@ static void ScanSounds() {
     Notify("Found %d WAV/MP3 files", (int)g_soundFiles.size());
 }
 static void StopSound() {
+    g_soundStartPhase = SoundStartPhase::Idle;
+    g_soundLocalStarted = false;
     RestoreVoiceInput();
     {
         std::lock_guard<std::mutex> lock(g_soundMutex);
@@ -2125,7 +2126,7 @@ static void SoundVolumeDown() {
 // later by SoundLoadTick on the game thread, so pressing Play never stalls menu input.
 static void PlaySound() {
     if (g_time < g_soundNextAllowed) { Notify("Wait until the current sound finishes"); return; }
-    if (g_soundWorkerActive.load() || g_soundDecodeState.load() != 0) { Notify("Sound is already loading"); return; }
+    if (g_soundStartPhase != SoundStartPhase::Idle || g_soundWorkerActive.load() || g_soundDecodeState.load() != 0) { Notify("Sound is already loading"); return; }
     if (g_soundFiles.empty()) ScanSounds();
     if (g_soundFiles.empty()) return;
     if (!p_audioInvoke || !p_audioUnbox || !G.audioClipCreate.IsValid() || !G.audioClipSetData.IsValid() ||
@@ -2230,7 +2231,7 @@ static void PlaySound() {
 
 // Runs through the same clip/upload/source path without files, codecs or voice chat.
 static void PlayTestTone() {
-    if (g_time < g_soundNextAllowed || g_soundWorkerActive.load() || g_soundDecodeState.load() != 0) {
+    if (g_time < g_soundNextAllowed || g_soundStartPhase != SoundStartPhase::Idle || g_soundWorkerActive.load() || g_soundDecodeState.load() != 0) {
         Notify("Wait until the current sound finishes");
         return;
     }
@@ -2255,8 +2256,63 @@ static void PlayTestTone() {
     ym::log("dark-matter sound: local test tone queued (no file, codec or voice)");
 }
 
+// Source creation, local start and recorder reconfiguration must not share the
+// upload-completion frame. Own only our added component, never the player's GO.
+static void SoundStartTick() {
+    switch (g_soundStartPhase) {
+    case SoundStartPhase::Source: {
+        ym::log("dark-matter sound: source stage (existing head GameObject)");
+        if (!Alive(g_soundSource.get())) {
+            if (!Alive(g_head.get()) || !G.tAudioSource || !G.goAddComponent.IsValid())
+                throw std::runtime_error("local audio host unavailable");
+            auto *host = AudioCall<Il2CppObject *>(G.compGameObject, g_head.get());
+            if (!Alive(host)) throw std::runtime_error("local audio host missing");
+            auto *component = AudioCall<Il2CppObject *>(G.goAddComponent, host, G.tAudioSource);
+            if (!Alive(component)) throw std::runtime_error("could not add local AudioSource");
+            g_soundSource.set(component);
+            if (G.asSetSpatial.IsValid()) AudioCall<void>(G.asSetSpatial, component, 0.0f);
+            if (G.asSetLoop.IsValid()) AudioCall<void>(G.asSetLoop, component, false);
+        }
+        g_soundStartPhase = SoundStartPhase::Local;
+        return;
+    }
+    case SoundStartPhase::Local: {
+        ym::log("dark-matter sound: local start stage");
+        if (!Alive(g_soundSource.get()) || !Alive(g_soundClip.get()))
+            throw std::runtime_error("local audio objects lost before start");
+        if (G.asSetVolume.IsValid()) AudioCall<void>(G.asSetVolume, g_soundSource.get(), g_soundVolume);
+        AudioCall<void>(G.asSetClip, g_soundSource.get(), g_soundClip.get());
+        AudioCall<void>(G.asPlay, g_soundSource.get());
+        g_soundLocalStarted = true;
+        g_soundNextAllowed = g_time + fmax(1.0, g_soundDuration);
+        g_soundStartPhase = SoundStartPhase::Voice;
+        return;
+    }
+    case SoundStartPhase::Voice: {
+        ym::log("dark-matter sound: voice stage requested=%d", g_soundRoomPlayback);
+        bool voiceSent = false;
+        try { if (g_soundRoomPlayback) voiceSent = StartVoicePlayback(g_soundClip.get(), g_soundDuration); }
+        catch (...) {
+            RestoreVoiceInput();
+            ym::log("dark-matter sound: voice routing failed; keeping local preview");
+        }
+        if (voiceSent) g_soundNextAllowed = g_time + fmax(1.0, g_soundDuration);
+        g_soundStartPhase = SoundStartPhase::Idle;
+        ym::log("dark-matter sound: playback started local=%d voice=%d", g_soundLocalStarted, voiceSent);
+        const std::string &p = g_soundPlayingPath;
+        size_t slash = p.find_last_of('/');
+        const char *name = slash == std::string::npos ? p.c_str() : p.c_str() + slash + 1;
+        if (voiceSent) Notify("Playing to room: %s", name);
+        else if (g_soundLocalStarted) Notify(g_soundRoomPlayback ? "Local only (voice chat unavailable): %s" : "Playing locally: %s", name);
+        return;
+    }
+    case SoundStartPhase::Idle: return;
+    }
+}
+
 static void SoundLoadTick() {
     if (g_voiceOverrideActive && g_time >= g_voiceRestoreAt) RestoreVoiceInput();
+    if (g_soundStartPhase != SoundStartPhase::Idle) { SoundStartTick(); return; }
     int state = g_soundDecodeState.load();
     if (state == 3) {
         g_soundDecodeState.store(0);
@@ -2319,50 +2375,10 @@ static void SoundLoadTick() {
     if (g_soundLoadOffset >= (size_t)g_soundLoadFrames) {
         std::vector<float>().swap(g_soundPcm);
         g_soundDecodeState.store(0);
-        const double duration = g_soundDuration;
-        g_soundNextAllowed = g_time + (duration < 1.0 ? 1.0 : duration);
-        ym::log("dark-matter sound: clip upload complete; creating local audio source");
-        bool localStarted = false;
-        if (!Alive(g_soundSource.get()) && G.soundGameObjectClass.IsValid() && G.soundGameObjectCtor.IsValid() &&
-            G.goAddComponent.IsValid() && G.asSetClip.IsValid() && G.asPlay.IsValid()) {
-            Kill(g_soundObject);
-            ym::log("dark-matter sound: allocating soundboard GameObject");
-            Il2CppObject *go = G.soundGameObjectClass.CreateNewInstance();
-            if (go) {
-                g_soundObject.set(go); // root the object before calling a managed constructor
-                AudioCall<void>(G.soundGameObjectCtor, go, CreateMonoString("DARK MATTER Soundboard"));
-            }
-            ym::log("dark-matter sound: adding AudioSource component");
-            Il2CppObject *sourceComp = go ? AudioCall<Il2CppObject *>(G.goAddComponent, go, G.tAudioSource) : nullptr;
-            if (sourceComp) {
-                g_soundObject.set(go);
-                g_soundSource.set(sourceComp);
-                if (g_head.get() && G.trSetParent.IsValid()) G.trSetParent[Tr(go)](Tr(g_head.get()), false);
-                if (G.asSetSpatial.IsValid()) AudioCall<void>(G.asSetSpatial, sourceComp, 0.0f);
-                if (G.asSetLoop.IsValid()) AudioCall<void>(G.asSetLoop, sourceComp, false);
-            } else Kill(g_soundObject);
-        }
-        if (Alive(g_soundSource.get()) && G.asSetClip.IsValid() && G.asPlay.IsValid()) {
-            if (G.asSetVolume.IsValid()) AudioCall<void>(G.asSetVolume, g_soundSource.get(), g_soundVolume);
-            AudioCall<void>(G.asSetClip, g_soundSource.get(), g_soundClip.get());
-            ym::log("dark-matter sound: starting AudioSource.Play");
-            AudioCall<void>(G.asPlay, g_soundSource.get());
-            localStarted = true;
-        }
-        ym::log("dark-matter sound: local=%d; routing voice input", localStarted);
-        bool voiceSent = false;
-        try { if (g_soundRoomPlayback) voiceSent = StartVoicePlayback(g_soundClip.get(), duration); }
-        catch (...) {
-            RestoreVoiceInput();
-            ym::log("dark-matter sound: voice routing failed; keeping local preview");
-        }
-        ym::log("dark-matter sound: playback started local=%d voice=%d", localStarted, voiceSent);
-        const std::string &p = g_soundPlayingPath;
-        size_t slash = p.find_last_of('/');
-        const char *name = slash == std::string::npos ? p.c_str() : p.c_str() + slash + 1;
-        if (voiceSent) Notify("Playing to room: %s", name);
-        else if (localStarted) Notify(g_soundRoomPlayback ? "Local only (voice chat unavailable): %s" : "Playing locally: %s", name);
-        else Notify("Could not start audio playback");
+        ym::log("dark-matter sound: upload complete; playback queued for next update");
+        g_soundLocalStarted = false;
+        g_soundStartPhase = SoundStartPhase::Source;
+        return;
     }
 }
 
@@ -3437,8 +3453,7 @@ static void OnRoomChange() {
     for (int r = 0; r < kRows; r++) { g_rowCube[r].clear(); g_rowLabel[r].clear(); g_rowText[r].clear(); }
     for (Ref *r : {&g_board, &g_bg, &g_outline, &g_title, &g_titleBar, &g_prev, &g_next, &g_notifyText, &g_tipText}) r->clear();
     StopSound();
-    g_soundSource.clear();
-    Kill(g_soundObject);
+    Kill(g_soundSource); // destroy only the component we added, not the head GameObject
     g_homeCube.clear();
     g_homeLabel.clear();
     for (Ref *r : {&g_menu, &g_pointer, &g_notifyGo, &g_leftPlatform, &g_rightPlatform, &g_gunBall, &g_gunLineGo}) Kill(*r);
