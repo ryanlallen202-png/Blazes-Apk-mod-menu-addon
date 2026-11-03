@@ -1015,7 +1015,7 @@ static void GoToSpot() {
 }
 
 static int g_jumpPowerLevel = 0;
-static Il2CppObject *g_jumpPowerPlayer = nullptr;
+static Ref g_jumpPowerPlayer;
 static float g_jumpPowerOldMax = 0, g_jumpPowerOldMultiplier = 0;
 static const float kJumpMax[] = {0, 11.0f, 14.0f, 18.0f};
 static const float kJumpMult[] = {0, 1.8f, 2.4f, 3.0f};
@@ -1023,16 +1023,16 @@ static void NextJumpPower() {
     Il2CppObject *p = g_player.get();
     if (!p || !G.maxJumpSpeed.IsValid() || !G.jumpMultiplier.IsValid()) { Notify("Jump settings unavailable"); return; }
     if (f_speedBoost) { Notify("Turn off Speed Boost first"); return; }
-    if (!g_jumpPowerLevel || g_jumpPowerPlayer != p) {
+    if (!g_jumpPowerLevel || g_jumpPowerPlayer.get() != p) {
         g_jumpPowerOldMax = G.maxJumpSpeed[p]();
         g_jumpPowerOldMultiplier = G.jumpMultiplier[p]();
-        g_jumpPowerPlayer = p;
+        g_jumpPowerPlayer.set(p);
     }
     g_jumpPowerLevel = (g_jumpPowerLevel + 1) % 4;
     if (!g_jumpPowerLevel) {
         G.maxJumpSpeed[p] = g_jumpPowerOldMax;
         G.jumpMultiplier[p] = g_jumpPowerOldMultiplier;
-        g_jumpPowerPlayer = nullptr;
+        g_jumpPowerPlayer.clear();
         Notify("Jump power: normal");
     } else {
         G.maxJumpSpeed[p] = kJumpMax[g_jumpPowerLevel];
@@ -1653,9 +1653,9 @@ static void OnRoomChange() {
     }
     g_boosted = nullptr;
     g_gravityOff = false;
-    if (g_jumpPowerLevel && g_jumpPowerPlayer == g_player.get() && G.maxJumpSpeed.IsValid() && G.jumpMultiplier.IsValid()) {
-        G.maxJumpSpeed[g_jumpPowerPlayer] = g_jumpPowerOldMax;
-        G.jumpMultiplier[g_jumpPowerPlayer] = g_jumpPowerOldMultiplier;
+    if (g_jumpPowerLevel && g_jumpPowerPlayer.get() == g_player.get() && G.maxJumpSpeed.IsValid() && G.jumpMultiplier.IsValid()) {
+        G.maxJumpSpeed[g_jumpPowerPlayer.get()] = g_jumpPowerOldMax;
+        G.jumpMultiplier[g_jumpPowerPlayer.get()] = g_jumpPowerOldMultiplier;
     }
     g_jumpPowerLevel = 0; g_jumpPowerPlayer = nullptr;
     for (Ref *r : {&g_player, &g_rigidbody, &g_leftHand, &g_rightHand, &g_head}) r->clear();
