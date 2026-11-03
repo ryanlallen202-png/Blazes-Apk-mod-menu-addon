@@ -101,6 +101,8 @@ static struct {
     Method<bool> itemHeld;
     Method<void> itemDrop, setHeldItem;
     void *(*arrayNew)(void *, uintptr_t) = nullptr;
+    uintptr_t (*arrayLength)(void *) = nullptr;
+    void *(*arrayAddrWithSize)(void *, int32_t, uintptr_t) = nullptr;
     void *(*valueBox)(void *, void *) = nullptr;
     Method<bool> behaviourGetEnabled;
     Method<void> behaviourSetEnabled;
@@ -281,6 +283,8 @@ static bool Lookups() {
         G.objectClass = Class("System", "Object").GetClass();
         G.stringClass = Class("System", "String").GetClass();
         G.arrayNew = (decltype(G.arrayNew))ym::api()->resolve("il2cpp_array_new");
+        G.arrayLength = (decltype(G.arrayLength))ym::api()->resolve("il2cpp_array_length");
+        G.arrayAddrWithSize = (decltype(G.arrayAddrWithSize))ym::api()->resolve("il2cpp_array_addr_with_size");
         G.valueBox = (decltype(G.valueBox))ym::api()->resolve("il2cpp_value_box");
         ym::log("dark-matter: items rpc=%d pv=%d item=%d box=%d", G.rpcCreateItem != nullptr, G.pvRpc.IsValid(),
                 G.itemKey.IsValid(), G.arrayNew && G.valueBox);
@@ -313,9 +317,14 @@ static bool Lookups() {
     for (const char *f : {"LegacyRuntime.ttf", "Arial.ttf"})
         if (!G.font.get() && G.builtinResource.IsValid() && G.tFont)
             G.font.set(G.builtinResource((Il2CppObject *)G.tFont, CreateMonoString(f)));
-    if (!G.font.get() && G.findAll.IsValid() && G.tFont) {   // else any font the game loaded (one time)
-        auto *arr = (uint8_t *)G.findAll((Il2CppObject *)G.tFont);
-        if (arr && *(uintptr_t *)(arr + 0x18) > 0) G.font.set(((Il2CppObject **)(arr + 0x20))[0]);
+    if (!G.font.get() && G.findAll.IsValid() && G.tFont && G.arrayLength && G.arrayAddrWithSize) {
+        // Else use the first loaded font. Read the managed array through IL2CPP's API,
+        // never by assuming a fixed object-header or element offset.
+        auto *arr = G.findAll((Il2CppObject *)G.tFont);
+        if (arr && G.arrayLength(arr) > 0) {
+            auto **first = (Il2CppObject **)G.arrayAddrWithSize(arr, (int32_t)sizeof(Il2CppObject *), 0);
+            if (first) G.font.set(*first);
+        }
     }
     G.ok = G.createPrimitive.IsValid() && G.goTransform.IsValid() && G.trSetPosition.IsValid() &&
            G.deviceAtNode.IsValid() && G.tryGetBool.IsValid() && G.leftHand.IsValid();
@@ -1925,11 +1934,13 @@ static bool BeginVoicePlayback(Il2CppObject *clip) {
     if (!G.tRecorder || !G.findAll.IsValid() || !G.recorderGetSourceType.IsValid() ||
         !G.recorderSetSourceType.IsValid() || !G.recorderSetAudioClip.IsValid() ||
         !G.recorderSetLoopAudioClip.IsValid() || !G.recorderRestart.IsValid()) return false;
-    auto *arr = (uint8_t *)G.findAll((Il2CppObject *)G.tRecorder);
-    size_t count = arr ? *(uintptr_t *)(arr + 0x18) : 0;
-    Il2CppObject **items = arr ? (Il2CppObject **)(arr + 0x20) : nullptr;
-    for (size_t i = 0; i < count; ++i) {
-        Il2CppObject *rec = items[i];
+    if (!G.arrayLength || !G.arrayAddrWithSize) return false;
+    Il2CppObject *arr = G.findAll((Il2CppObject *)G.tRecorder);
+    uintptr_t count = arr ? G.arrayLength(arr) : 0;
+    for (uintptr_t i = 0; i < count; ++i) {
+        auto **slot = (Il2CppObject **)G.arrayAddrWithSize(arr, (int32_t)sizeof(Il2CppObject *), i);
+        if (!slot) return false;
+        Il2CppObject *rec = *slot;
         if (!Alive(rec)) continue;
         if (G.recorderGetTransmitEnabled.IsValid() && !G.recorderGetTransmitEnabled[rec]()) continue;
         if (G.recorderGetRecording.IsValid() && !G.recorderGetRecording[rec]()) continue;
@@ -1959,11 +1970,15 @@ static bool BeginVoicePlayback(Il2CppObject *clip) {
     return false;
 }
 static bool FillSoundClip(Il2CppObject *clip, const std::vector<float> &pcm) {
-    if (!Alive(clip) || pcm.empty() || !G.arrayNew || !G.audioClipSetData.IsValid()) return false;
+    if (!Alive(clip) || pcm.empty() || !G.arrayNew || !G.arrayAddrWithSize || !G.audioClipSetData.IsValid()) return false;
     Il2CppObject *managed = (Il2CppObject *)G.arrayNew(
         Class("System", "Single").GetClass(), (uintptr_t)pcm.size());
     if (!managed) return false;
-    memcpy((uint8_t *)managed + 0x20, pcm.data(), pcm.size() * sizeof(float));
+    // Ask IL2CPP for the first float element instead of assuming that array data
+    // starts at a hard-coded byte offset (which differs across runtime builds).
+    float *data = (float *)G.arrayAddrWithSize(managed, (int32_t)sizeof(float), 0);
+    if (!data) return false;
+    memcpy(data, pcm.data(), pcm.size() * sizeof(float));
     // Populate the entire non-streaming AudioClip before Photon starts reading it.
     return G.audioClipSetData[clip](managed, 0);
 }
@@ -1971,7 +1986,7 @@ static void PlaySound() {
     if (g_soundActive || g_time < g_nextSoundPlay) { Notify("Soundboard is busy"); return; }
     if (g_soundFiles.empty()) ScanSounds();
     if (g_soundFiles.empty() || g_soundIndex >= g_soundFiles.size()) return;
-    if (!G.audioClipCreate.IsValid() || !G.audioClipSetData.IsValid() || !G.arrayNew) {
+    if (!G.audioClipCreate.IsValid() || !G.audioClipSetData.IsValid() || !G.arrayNew || !G.arrayAddrWithSize) {
         Notify("Unity audio methods unavailable"); return;
     }
     std::vector<float> pcm;
@@ -1979,6 +1994,10 @@ static void PlaySound() {
     const std::string path = g_soundFiles[g_soundIndex];
     if (!LoadSound(path, pcm, channels, sampleRate) || pcm.empty()) {
         Notify("Could not decode WAV/MP3 (max 30 sec)"); return;
+    }
+    if (channels < 1 || channels > 2 || sampleRate < 8000 || sampleRate > 48000 ||
+        pcm.empty() || pcm.size() % (size_t)channels != 0) {
+        Notify("Unsupported or invalid WAV/MP3 audio format"); return;
     }
     size_t frames = pcm.size() / (size_t)channels;
     if (!frames || frames > (size_t)sampleRate * 30) { Notify("Sound must be 30 seconds or shorter"); return; }
