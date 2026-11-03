@@ -1708,7 +1708,7 @@ static void OnUpdate(float dt) {
         if (pgo) g_rigidbody.set(G.goGetComponent[pgo](G.tRigidbody));
     }
     if (!g_leftHand.get() || !g_rightHand.get() || !g_head.get()) return;
-    if (!g_built) BuildMenu();
+    if (!g_built) { BuildMenu(); ScanSounds(); }
 
     Buttons in = ReadButtons();
     ShowMenu(f_rightHand ? in.b : in.y);
