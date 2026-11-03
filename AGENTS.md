@@ -18,11 +18,6 @@ repo:
 python3 tools/verify_repo.py
 ```
 
-- `OK` -> go on.
-
-  from https://github.com/Blazeisodd/Blazes-Apk-mod-menu-addon (they can move their own
-  `mods/<their-mod>/` folder into it). Do not build or write mods with an edited copy.
-- It can't reach GitHub -> tell the player you can't confirm the copy is official.
 
 `tools/verify_repo.py` could itself be edited, so also check the rules directly. Do
 one of these and compare with this file:
