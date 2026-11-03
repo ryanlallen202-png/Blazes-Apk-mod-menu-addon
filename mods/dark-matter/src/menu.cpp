@@ -1667,6 +1667,7 @@ static bool DecodeMp3(const std::string &path, std::vector<float> &pcm, int &cha
             if (fmt) {
                 AMediaFormat_getInt32(fmt, AMEDIAFORMAT_KEY_CHANNEL_COUNT, &outChannels);
                 AMediaFormat_getInt32(fmt, AMEDIAFORMAT_KEY_SAMPLE_RATE, &outRate);
+                if (outChannels > 0 && outRate > 0) sampleCap = (size_t)outChannels * (size_t)outRate * 30u;
                 AMediaFormat_delete(fmt);
             }
         } else if (outIndex >= 0) {
@@ -1801,13 +1802,19 @@ static bool BeginVoicePlayback(Il2CppObject *clip) {
         g_haveOldRecording = G.recorderGetRecording.IsValid() && G.recorderSetRecording.IsValid();
         if (g_haveOldRecording) g_oldRecording = G.recorderGetRecording[rec]();
         g_soundRecorder.set(rec);
+        g_soundRemote = true; // set before mutations so an exception can always restore the mic
         // Photon Voice InputSourceType.AudioClip is enum value 1.
-        G.recorderSetLoopAudioClip[rec](false);
-        if (G.recorderSetVoiceDetection.IsValid()) G.recorderSetVoiceDetection[rec](false);
-        G.recorderSetAudioClip[rec](clip);
-        G.recorderSetSourceType[rec](1);
-        G.recorderRestart[rec]();
-        g_soundRemote = true;
+        try {
+            G.recorderSetLoopAudioClip[rec](false);
+            if (G.recorderSetVoiceDetection.IsValid()) G.recorderSetVoiceDetection[rec](false);
+            G.recorderSetAudioClip[rec](clip);
+            G.recorderSetSourceType[rec](1);
+            G.recorderRestart[rec]();
+        } catch (...) {
+            RestoreVoiceRecorder();
+            ym::log("dark-matter: voice soundboard setup failed; mic restored");
+            return false;
+        }
         return true;
     }
     return false;
