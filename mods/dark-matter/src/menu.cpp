@@ -435,6 +435,7 @@ struct Item {
     Cat target = MAIN;            // OPEN: the page it opens
     bool *flag = nullptr;         // TOGGLE: the switch
     void (*fn)() = nullptr;       // ACTION, or called after a TOGGLE changes
+    int soundIndex = -1;           // >= 0 for a sound-file button
 };
 // The owner's layout (2026-10-31). Keep this order.
 static Item g_items[] = {
@@ -518,10 +519,7 @@ static Item g_items[] = {
 
     {SOUND, "Exit Soundboard", OPEN, MAIN},
     {SOUND, "Scan Sounds Folder", ACTION, MAIN, nullptr, ScanSounds},
-    {SOUND, "Previous Sound", ACTION, MAIN, nullptr, PreviousSound},
-    {SOUND, "Next Sound", ACTION, MAIN, nullptr, NextSound},
-    {SOUND, "Play Sound", ACTION, MAIN, nullptr, PlaySound},
-    {SOUND, "Stop Sound", ACTION, MAIN, nullptr, StopSound},
+static sound controls    {SOUND, "Stop Sound", ACTION, MAIN, nullptr, StopSound},
     {SOUND, "Volume Up", ACTION, MAIN, nullptr, SoundVolumeUp},
     {SOUND, "Volume Down", ACTION, MAIN, nullptr, SoundVolumeDown},
 };
@@ -641,6 +639,8 @@ static bool g_built = false, g_menuShown = false, g_dirty = true;
 static Cat g_cat = MAIN;
 static int g_page = 0;
 static std::vector<Item *> g_view;                                // what the current page list shows
+static std::vector<Item> g_soundItems;
+static std::vector<std::string> g_soundLabels;
 static double g_time = 0, g_nextPress = 0, g_notifyUntil = 0, g_nextTitle = 0;
 static const float kMenuSizes[] = {0.5f, 0.75f, 1.0f, 1.25f, 1.5f};
 static int g_menuSizeIndex = 2;
@@ -656,6 +656,8 @@ static void BuildView() {
         for (auto &it : g_items) if (it.kind == TOGGLE && *it.flag && it.flag != &f_notify) g_view.push_back(&it);
     } else {
         for (auto &it : g_items) if (it.cat == g_cat) g_view.push_back(&it);
+        if (g_cat == SOUND)
+            for (auto &it : g_soundItems) g_view.push_back(&it);
     }
     if (g_page >= PageCount()) g_page = 0;
 }
@@ -903,7 +905,12 @@ static void Press(Item *it) {
         Notify("[%s] %s", *it->flag ? "ON" : "OFF", it->label);
         break;
     case ACTION:
-        if (it->fn) it->fn();
+        if (it->soundIndex >= 0) {
+            g_soundIndex = (size_t)it->soundIndex;
+            if (g_time < g_nextSoundPlay || g_soundActive)
+                Notify("Soundboard is busy; wait for the clip to finish");
+            else PlaySound();
+        } else if (it->fn) it->fn();
         break;
     }
     g_dirty = true;
@@ -1833,6 +1840,10 @@ static std::string ModsSoundPath() {
 }
 static double g_soundEnd = 0, g_soundStarted = 0, g_nextSoundPlay = 0;
 static bool g_soundActive = false, g_soundRemote = false;
+static std::vector<float> g_soundPcm;
+static size_t g_soundFramesTotal = 0, g_soundFramesQueued = 0;
+static int g_soundChannels = 0, g_soundSampleRate = 0;
+static constexpr size_t kSoundChunkFrames = 4096;
 static Ref g_soundRecorder, g_oldRecorderClip;
 static int g_oldSourceType = 0;
 static bool g_oldLoop = false, g_oldVoiceDetection = false, g_oldRecording = false;
@@ -1859,11 +1870,16 @@ static void StopSound() {
     g_soundActive = false;
     g_soundEnd = 0;
     g_soundStarted = 0;
+    g_soundPcm.clear();
+    g_soundFramesTotal = g_soundFramesQueued = 0;
+    g_soundChannels = g_soundSampleRate = 0;
 }
 static void ScanSounds() {
     g_soundDirectory = ModsSoundPath();
     if (g_soundDirectory.empty()) { Notify("Mods folder unavailable"); return; }
     g_soundFiles.clear();
+    g_soundItems.clear();
+    g_soundLabels.clear();
     DIR *d = opendir(g_soundDirectory.c_str());
     if (!d) { Notify("Create mods/sounds folder first"); return; }
     while (dirent *e = readdir(d)) {
@@ -1876,7 +1892,17 @@ static void ScanSounds() {
     closedir(d);
     std::sort(g_soundFiles.begin(), g_soundFiles.end());
     g_soundIndex = 0;
-    Notify("Found %d WAV/MP3 files", (int)g_soundFiles.size());
+    g_soundLabels.reserve(g_soundFiles.size());
+    g_soundItems.reserve(g_soundFiles.size());
+    for (size_t i = 0; i < g_soundFiles.size(); ++i) {
+        const std::string &path = g_soundFiles[i];
+        size_t slash = path.find_last_of('/');
+        g_soundLabels.push_back(slash == std::string::npos ? path : path.substr(slash + 1));
+        g_soundItems.push_back(Item{SOUND, g_soundLabels.back().c_str(), ACTION, MAIN, nullptr, nullptr, (int)i});
+    }
+    g_page = 0;
+    g_dirty = true;
+    Notify("Found %d sounds. Tap one to play", (int)g_soundFiles.size());
 }
 static void SelectSound(int direction) {
     if (g_soundFiles.empty()) { Notify("No sounds. Scan sounds folder first"); return; }
@@ -1936,10 +1962,23 @@ static bool BeginVoicePlayback(Il2CppObject *clip) {
     }
     return false;
 }
+static bool FeedSoundChunk() {
+    if (!Alive(g_soundClip.get()) || g_soundFramesQueued >= g_soundFramesTotal ||
+        !g_soundChannels || !g_soundSampleRate || !G.arrayNew || !G.audioClipSetData.IsValid()) return false;
+    size_t frames = std::min(kSoundChunkFrames, g_soundFramesTotal - g_soundFramesQueued);
+    size_t samples = frames * (size_t)g_soundChannels;
+    size_t offset = g_soundFramesQueued * (size_t)g_soundChannels;
+    Il2CppObject *managed = (Il2CppObject *)G.arrayNew(Class("System", "Single").GetClass(), (uintptr_t)samples);
+    if (!managed) return false;
+    memcpy((uint8_t *)managed + 0x20, g_soundPcm.data() + offset, samples * sizeof(float));
+    if (!G.audioClipSetData[g_soundClip.get()](managed, (int)offset)) return false;
+    g_soundFramesQueued += frames;
+    return true;
+}
 static void PlaySound() {
     if (g_soundActive || g_time < g_nextSoundPlay) { Notify("Soundboard is busy"); return; }
     if (g_soundFiles.empty()) ScanSounds();
-    if (g_soundFiles.empty()) return;
+    if (g_soundFiles.empty() || g_soundIndex >= g_soundFiles.size()) return;
     if (!G.audioClipCreate.IsValid() || !G.audioClipSetData.IsValid() || !G.arrayNew) {
         Notify("Unity audio methods unavailable"); return;
     }
@@ -1952,22 +1991,27 @@ static void PlaySound() {
     size_t frames = pcm.size() / (size_t)channels;
     if (!frames || frames > (size_t)sampleRate * 30) { Notify("Sound must be 30 seconds or shorter"); return; }
     for (float &v : pcm) v = fmaxf(-1.0f, fminf(1.0f, v * g_soundVolume));
-    void *managed = G.arrayNew(Class("System", "Single").GetClass(), (uintptr_t)pcm.size());
-    if (!managed) { Notify("Could not allocate audio buffer"); return; }
-    memcpy((uint8_t *)managed + 0x20, pcm.data(), pcm.size() * sizeof(float));
     StopSound();
     Il2CppObject *clip = G.audioClipCreate(CreateMonoString("DARK MATTER Sound"), (int)frames, channels, sampleRate, false);
-    if (!clip || !G.audioClipSetData[clip](managed, 0)) {
-        if (clip) G.destroy(clip);
-        Notify("Could not create audio clip"); return;
-    }
+    if (!clip) { Notify("Could not create audio clip"); return; }
     g_soundClip.set(clip);
+    g_soundPcm = std::move(pcm);
+    g_soundFramesTotal = frames;
+    g_soundFramesQueued = 0;
+    g_soundChannels = channels;
+    g_soundSampleRate = sampleRate;
+
+    // Pre-fill only half a second. The rest is copied in small per-frame chunks.
+    size_t prebuffer = std::min(g_soundFramesTotal, (size_t)sampleRate / 2);
+    while (g_soundFramesQueued < prebuffer)
+        if (!FeedSoundChunk()) { StopSound(); Notify("Could not buffer sound"); return; }
+
     bool remote = BeginVoicePlayback(clip);
     if (!remote) {
         if (!Alive(g_soundSource.get())) {
             Il2CppObject *go = Class("UnityEngine", "GameObject").CreateNewObjectParameters(CreateMonoString("DARK MATTER Soundboard"));
             Il2CppObject *source = go ? G.goAddComponent[go](G.tAudioSource) : nullptr;
-            if (!source) { if (go) G.destroy(go); Kill(g_soundClip); Notify("No Photon recorder; local playback unavailable"); return; }
+            if (!source) { if (go) G.destroy(go); StopSound(); Notify("No Photon recorder; local playback unavailable"); return; }
             g_soundSource.set(source);
             if (g_head.get()) G.trSetParent[Tr(go)](Tr(g_head.get()), false);
             G.audioSourceSetSpatialBlend[source](0.0f);
@@ -1979,14 +2023,17 @@ static void PlaySound() {
     g_soundActive = true;
     g_soundStarted = g_time;
     double duration = (double)frames / (double)sampleRate;
-    g_soundEnd = g_time + duration;
+    g_soundEnd = g_time + duration + 0.2;
     g_nextSoundPlay = g_time + fmax(1.0, duration);
     size_t slash = path.find_last_of('/');
-    Notify(remote ? "Sending to room: %s" : "Local only: %s",
+    Notify(remote ? "Streaming to room: %s" : "Playing locally: %s",
            slash == std::string::npos ? path.c_str() : path.c_str() + slash + 1);
 }
 static void SoundboardTick() {
     if (!g_soundActive) return;
+    for (int i = 0; i < 2 && g_soundFramesQueued < g_soundFramesTotal; ++i) {
+        if (!FeedSoundChunk()) { StopSound(); Notify("Sound stream buffer failed; microphone restored"); return; }
+    }
     if (g_time >= g_soundEnd) { StopSound(); Notify("Sound finished; microphone restored"); return; }
     if (g_soundRemote && Alive(g_soundRecorder.get()) && G.recorderGetTransmitting.IsValid() &&
         !G.recorderGetTransmitting[g_soundRecorder.get()]() && g_time >= g_soundStarted + 1.5 && g_time + 0.1 < g_soundEnd) {
