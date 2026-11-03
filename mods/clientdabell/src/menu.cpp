@@ -1811,7 +1811,7 @@ static void SpawnOnHandTick(const Buttons &in) {
 // (most of them) would sometimes not be heard by the room at all.
 static constexpr int kMaxSongs = 64;
 static constexpr double kMaxSeconds = 272;             // about 4.5 minutes
-static constexpr uint32_t kChunkFrames = 32768;        // 48 kHz frames made per game frame
+static constexpr uint32_t kChunkFrames = 4096;        // 48 kHz frames made per game frame
 static constexpr uint32_t kVoiceRate = 48000;
 static std::vector<std::string> g_songs;
 static int g_songSel = 0, g_soundVol = 1, g_clipSong = -1;
