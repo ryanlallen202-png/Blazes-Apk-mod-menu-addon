@@ -111,6 +111,25 @@ int main(int argc, char **argv) {
                             str(SOURCE.parent / "dr_mp3_impl.cpp"), "-o", str(exe)], check=True)
             subprocess.run([str(exe), *fixtures], check=True)
 
+    def test_exact_audio_bindings_and_recorder_order(self):
+        source = SOURCE.read_text()
+        self.assertIn('Overload(aclip, "SetData", {"System.Single[]", "System.Int32"})', source)
+        self.assertNotIn('aclip.GetMethod("SetData", 2)', source)
+        self.assertIn('Overload(go, ".ctor", {"System.String"})', source)
+        self.assertNotIn('G.voiceRestartRecording', source)
+        playback_start = source.index("static bool StartVoicePlayback")
+        playback = source[playback_start:source.index("// ---- soundboard playback", playback_start)]
+        self.assertLess(playback.index("G.voiceStopRecording[recorder]()"),
+                        playback.index("G.voiceSetAudioClip[recorder](clip)"))
+        self.assertLess(playback.index("G.voiceSetSourceType[recorder](1)"),
+                        playback.index("G.voiceStartRecording[recorder]()"))
+        restore_start = source.index("static void RestoreVoiceInput() {")
+        restore = source[restore_start:playback_start]
+        self.assertLess(restore.index("G.voiceStopRecording[recorder]()"),
+                        restore.index("G.voiceSetAudioClip[recorder]"))
+        self.assertLess(restore.index("G.voiceSetSourceType[recorder]"),
+                        restore.index("G.voiceStartRecording[recorder]()"))
+
     def test_upload_and_playback_guards(self):
         source = SOURCE.read_text()
         self.assertIn("G.audioClipSetData[g_soundClip.get()](arr, (int)g_soundLoadOffset)", source)

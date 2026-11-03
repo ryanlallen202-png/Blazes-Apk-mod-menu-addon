@@ -38,7 +38,17 @@ build/test-venv/bin/pip install lameenc==1.9.0
 build/test-venv/bin/python mods/dark-matter/tests/test_soundboard.py
 ```
 
-All four tests passed in the development sandbox. They do not run Unity or Photon Voice. Android compilation requires the NDK; room audio and microphone restoration must be tested on a headset with another consenting listener.
+All five tests passed in the development sandbox. They include guards for exact audio overload selection and stop/configure/start recorder ordering, but do not run Unity or Photon Voice. Android compilation requires the NDK; room audio and microphone restoration must be tested on a headset with another consenting listener.
+
+## Playback crash diagnostics
+
+The **Soundboard Playback Fix 2** build selects `AudioClip.SetData(System.Single[], System.Int32)` explicitly instead of choosing a potentially incompatible two-argument overload. It also selects the string GameObject constructor explicitly and stops the voice recorder before changing its input. These address concrete playback risks; the reported headset crash cannot be confirmed resolved without an on-device retest.
+
+If either format still crashes, send the final lines containing `dark-matter sound:` from:
+
+`Android/data/com.TrassGames.Yeeps/files/bnm_checkpoint.txt`
+
+Stage markers distinguish clip creation, the first PCM upload, local playback, voice recorder discovery, and recorder startup. Also report whether the crash occurs before or after the loading percentage reaches 100%, and whether the clip is audible first. A native crash may require the headset's Android crash log in addition to these markers.
 
 Headset checklist:
 

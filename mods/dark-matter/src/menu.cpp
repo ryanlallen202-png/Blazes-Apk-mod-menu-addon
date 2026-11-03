@@ -35,7 +35,7 @@ using namespace BNM::Structures::Unity;
 using BNM::IL2CPP::Il2CppObject;
 
 YEEPS_MOD("DARK MATTER")
-#define DM_VERSION "Full Feature Build"
+#define DM_VERSION "Soundboard Playback Fix 2"
 
 // ---- small helpers ---------------------------------------------------------
 
@@ -100,11 +100,13 @@ static struct {
     Method<void> pvRpc;
     Method<Il2CppObject *> audioClipCreate, applicationPersistentPath; // decoded sound clips
     Method<bool> audioClipSetData;
+    Class soundGameObjectClass;
+    Method<void> soundGameObjectCtor;
     Field<Il2CppObject *> voiceConnection;
     Method<Il2CppObject *> voicePrimaryRecorder, voiceGetAudioClip;
     Method<int> voiceGetSourceType;
     Method<bool> voiceGetTransmitEnabled, voiceGetIsRecording, voiceGetLoopAudioClip;
-    Method<void> voiceSetSourceType, voiceSetAudioClip, voiceSetLoopAudioClip, voiceRestartRecording,
+    Method<void> voiceSetSourceType, voiceSetAudioClip, voiceSetLoopAudioClip,
                  voiceStartRecording, voiceStopRecording;
     Method<void> asSetClip, asSetVolume, asSetSpatial, asSetLoop, asPlay, asStop;
     Method<bool> asIsPlaying;
@@ -150,6 +152,8 @@ static bool Lookups() {
           graphic("UnityEngine.UI", "Graphic"), canvas("UnityEngine", "Canvas"), rt("UnityEngine", "RectTransform"),
           dev("UnityEngine.XR", "InputDevices"), player("", "MasterPlayer", Image("Assembly-CSharp.dll"));
     if (!go || !tr || !player || !dev) { ym::log("dark-matter: game classes missing"); return false; }
+    G.soundGameObjectClass = go;
+    G.soundGameObjectCtor = Overload(go, ".ctor", {"System.String"});
     G.createPrimitive = go.GetMethod("CreatePrimitive", 1);
     G.goTransform = go.GetMethod("get_transform", 0);
     G.goGetComponent = Overload(go, "GetComponent", {"System.Type"});
@@ -166,7 +170,9 @@ static bool Lookups() {
         if (flt.IsValid()) G.floatClass = flt.GetClass();
         if (aclip.IsValid()) {
             G.audioClipCreate = Overload(aclip, "Create", {"System.String", "System.Int32", "System.Int32", "System.Int32", "System.Boolean"});
-            G.audioClipSetData = aclip.GetMethod("SetData", 2);
+            // Unity 6 can expose both float[] and span overloads with two arguments.
+            // Calling a span entry point with a managed-array pointer corrupts the ABI.
+            G.audioClipSetData = Overload(aclip, "SetData", {"System.Single[]", "System.Int32"});
         }
         if (asrc.IsValid()) {
             G.tAudioSource = asrc.GetMonoType();
@@ -196,9 +202,8 @@ static bool Lookups() {
             G.voiceSetAudioClip = recorder.GetMethod("set_AudioClip", 1);
             G.voiceSetSourceType = recorder.GetMethod("set_SourceType", 1);
             G.voiceSetLoopAudioClip = recorder.GetMethod("set_LoopAudioClip", 1);
-            G.voiceRestartRecording = recorder.GetMethod("RestartRecording", 1);
-            G.voiceStartRecording = recorder.GetMethod("StartRecording", 0);
-            G.voiceStopRecording = recorder.GetMethod("StopRecording", 0);
+            G.voiceStartRecording = Overload(recorder, "StartRecording", {});
+            G.voiceStopRecording = Overload(recorder, "StopRecording", {});
         }
         ym::log("dark-matter: voice sound input manager=%d recorder=%d", G.voiceConnection.IsValid(),
                 G.voiceSetSourceType.IsValid() && G.voiceSetAudioClip.IsValid());
@@ -1853,16 +1858,11 @@ static void RestoreVoiceInput() {
     Il2CppObject *recorder = g_voiceRecorder.get();
     if (Alive(recorder)) {
         try {
+            G.voiceStopRecording[recorder]();
             G.voiceSetAudioClip[recorder](g_voicePreviousClip.get());
             G.voiceSetLoopAudioClip[recorder](g_voicePreviousLoop);
             G.voiceSetSourceType[recorder](g_voicePreviousSourceType);
-            if (g_voiceWasRecording) {
-                if (G.voiceRestartRecording.IsValid()) G.voiceRestartRecording[recorder](false);
-                else {
-                    if (G.voiceStopRecording.IsValid()) G.voiceStopRecording[recorder]();
-                    if (G.voiceStartRecording.IsValid()) G.voiceStartRecording[recorder]();
-                }
-            }
+            if (g_voiceWasRecording) G.voiceStartRecording[recorder]();
         } catch (...) { ym::log("dark-matter: could not restore voice input"); }
     }
     g_voiceRecorder.clear();
@@ -1874,10 +1874,11 @@ static bool StartVoicePlayback(Il2CppObject *clip, double duration) {
     if (!Alive(clip) || !G.voiceGetTransmitEnabled.IsValid() || !G.voiceGetIsRecording.IsValid() ||
         !G.voiceGetSourceType.IsValid() || !G.voiceGetAudioClip.IsValid() || !G.voiceGetLoopAudioClip.IsValid() ||
         !G.voiceSetAudioClip.IsValid() || !G.voiceSetSourceType.IsValid() || !G.voiceSetLoopAudioClip.IsValid() ||
-        (!G.voiceRestartRecording.IsValid() && (!G.voiceStopRecording.IsValid() || !G.voiceStartRecording.IsValid()))) {
+        !G.voiceStopRecording.IsValid() || !G.voiceStartRecording.IsValid()) {
         Notify("Voice chat audio input is unavailable");
         return false;
     }
+    ym::log("dark-matter sound: locating voice recorder");
     Il2CppObject *recorder = FindVoiceRecorder();
     if (!Alive(recorder)) { Notify("Voice chat recorder not found"); return false; }
     if (!G.voiceGetTransmitEnabled[recorder]()) { Notify("Unmute voice chat to play for the room"); return false; }
@@ -1889,14 +1890,13 @@ static bool StartVoicePlayback(Il2CppObject *clip, double duration) {
     g_voiceWasRecording = true;
     g_voiceOverrideActive = true;
     try {
+        ym::log("dark-matter sound: stopping recorder before clip input");
+        G.voiceStopRecording[recorder]();
         G.voiceSetAudioClip[recorder](clip);
         G.voiceSetLoopAudioClip[recorder](false);
         G.voiceSetSourceType[recorder](1); // Recorder.InputSourceType.AudioClip
-        if (G.voiceRestartRecording.IsValid()) G.voiceRestartRecording[recorder](false);
-        else {
-            G.voiceStopRecording[recorder]();
-            G.voiceStartRecording[recorder]();
-        }
+        ym::log("dark-matter sound: starting clip recorder");
+        G.voiceStartRecording[recorder]();
     } catch (...) {
         RestoreVoiceInput();
         Notify("Could not route sound through voice chat");
@@ -2171,6 +2171,12 @@ static void SoundLoadTick() {
             rate = g_soundDecodedRate;
             frames = g_soundDecodedFrames;
         }
+        if ((channels != 1 && channels != 2) || rate < 8000 || rate > 192000 ||
+            frames == 0 || frames > kMaxSoundSamples / (size_t)channels ||
+            g_soundPcm.size() != frames * (size_t)channels) {
+            StopSound(); Notify("Invalid decoded audio"); return;
+        }
+        ym::log("dark-matter sound: creating clip frames=%zu channels=%d rate=%d", frames, channels, rate);
         Il2CppObject *clip = G.audioClipCreate(CreateMonoString("DARK MATTER Sound"),
             (int)frames, channels, rate, false);
         if (!clip) { StopSound(); Notify("Could not create audio clip"); return; }
@@ -2189,6 +2195,7 @@ static void SoundLoadTick() {
     Il2CppObject *arr = (Il2CppObject *)G.arrayNew(G.floatClass, (uintptr_t)samplesNow);
     if (!arr) { StopSound(); Notify("Not enough memory to load sound"); return; }
     memcpy((uint8_t *)arr + 0x20, source, samplesNow * sizeof(float));
+    if (g_soundLoadOffset == 0) ym::log("dark-matter sound: uploading float[] PCM");
     if (!G.audioClipSetData[g_soundClip.get()](arr, (int)g_soundLoadOffset)) {
         StopSound(); Notify("Could not finish loading sound"); return;
     }
@@ -2202,11 +2209,17 @@ static void SoundLoadTick() {
         std::vector<float>().swap(g_soundPcm);
         g_soundDecodeState.store(0);
         const double duration = g_soundDuration;
-        const bool voiceSent = StartVoicePlayback(g_soundClip.get(), duration);
+        g_soundNextAllowed = g_time + (duration < 1.0 ? 1.0 : duration);
+        ym::log("dark-matter sound: clip upload complete; starting local playback");
         bool localStarted = false;
-        if (!Alive(g_soundSource.get()) && G.goAddComponent.IsValid() && G.asSetClip.IsValid() && G.asPlay.IsValid()) {
+        if (!Alive(g_soundSource.get()) && G.soundGameObjectClass.IsValid() && G.soundGameObjectCtor.IsValid() &&
+            G.goAddComponent.IsValid() && G.asSetClip.IsValid() && G.asPlay.IsValid()) {
             Kill(g_soundObject);
-            Il2CppObject *go = Class("UnityEngine", "GameObject").CreateNewObjectParameters(CreateMonoString("DARK MATTER Soundboard"));
+            Il2CppObject *go = G.soundGameObjectClass.CreateNewInstance();
+            if (go) {
+                g_soundObject.set(go); // root the object before calling a managed constructor
+                G.soundGameObjectCtor[go](CreateMonoString("DARK MATTER Soundboard"));
+            }
             Il2CppObject *sourceComp = go ? G.goAddComponent[go](G.tAudioSource) : nullptr;
             if (sourceComp) {
                 g_soundObject.set(go);
@@ -2214,7 +2227,7 @@ static void SoundLoadTick() {
                 if (g_head.get() && G.trSetParent.IsValid()) G.trSetParent[Tr(go)](Tr(g_head.get()), false);
                 if (G.asSetSpatial.IsValid()) G.asSetSpatial[sourceComp](0.0f);
                 if (G.asSetLoop.IsValid()) G.asSetLoop[sourceComp](false);
-            } else if (go) G.destroy(go);
+            } else Kill(g_soundObject);
         }
         if (Alive(g_soundSource.get()) && G.asSetClip.IsValid() && G.asPlay.IsValid()) {
             if (G.asSetVolume.IsValid()) G.asSetVolume[g_soundSource.get()](g_soundVolume);
@@ -2222,7 +2235,9 @@ static void SoundLoadTick() {
             G.asPlay[g_soundSource.get()]();
             localStarted = true;
         }
-        g_soundNextAllowed = g_time + (duration < 1.0 ? 1.0 : duration);
+        ym::log("dark-matter sound: local=%d; routing voice input", localStarted);
+        const bool voiceSent = StartVoicePlayback(g_soundClip.get(), duration);
+        ym::log("dark-matter sound: playback started local=%d voice=%d", localStarted, voiceSent);
         const std::string &p = g_soundPlayingPath;
         size_t slash = p.find_last_of('/');
         const char *name = slash == std::string::npos ? p.c_str() : p.c_str() + slash + 1;
