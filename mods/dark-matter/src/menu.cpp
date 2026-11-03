@@ -633,6 +633,8 @@ static Cat g_cat = MAIN;
 static int g_page = 0;
 static std::vector<Item *> g_view;                                // what the current page list shows
 static double g_time = 0, g_nextPress = 0, g_notifyUntil = 0, g_nextTitle = 0;
+static const float kMenuSizes[] = {0.5f, 0.75f, 1.0f, 1.25f, 1.5f};
+static int g_menuSizeIndex = 2;
 static int g_touching = -2, g_frames = 0;
 static float g_fps = 0;
 
@@ -1033,8 +1035,6 @@ static const float kIronSpeeds[] = {15, 12, 8, 4};
 static int g_ironSpeed = 0;
 static void NextIronSpeed() { g_ironSpeed = (g_ironSpeed + 1) % 4; Notify("Iron Man speed: %d", (int)kIronSpeeds[g_ironSpeed]); }
 static void NextTheme() { g_theme = (g_theme + 1) % kThemeCount; Notify("Theme: %s", T().name); }
-static const float kMenuSizes[] = {0.5f, 0.75f, 1.0f, 1.25f, 1.5f};
-static int g_menuSizeIndex = 2;
 static void NextMenuSize() {
     g_menuSizeIndex = (g_menuSizeIndex + 1) % 5;
     float size = kMenuSizes[g_menuSizeIndex];
