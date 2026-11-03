@@ -1715,7 +1715,7 @@ static std::string ModsSoundPath() {
     const char *dir = ym::api() ? ym::api()->modsDir : nullptr;
     return dir && dir[0] ? std::string(dir) + "/sounds" : "";
 }
-static double g_soundEnd = 0, g_nextSoundPlay = 0;
+static double g_soundEnd = 0, g_soundStarted = 0, g_nextSoundPlay = 0;
 static bool g_soundActive = false, g_soundRemote = false;
 static Ref g_soundRecorder, g_oldRecorderClip;
 static int g_oldSourceType = 0;
@@ -1742,6 +1742,7 @@ static void StopSound() {
     Kill(g_soundClip);
     g_soundActive = false;
     g_soundEnd = 0;
+    g_soundStarted = 0;
 }
 static void ScanSounds() {
     g_soundDirectory = ModsSoundPath();
@@ -1860,6 +1861,7 @@ static void PlaySound() {
         G.audioSourcePlay[g_soundSource.get()]();
     }
     g_soundActive = true;
+    g_soundStarted = g_time;
     double duration = (double)frames / (double)sampleRate;
     g_soundEnd = g_time + duration;
     g_nextSoundPlay = g_time + fmax(1.0, duration);
@@ -1871,7 +1873,7 @@ static void SoundboardTick() {
     if (!g_soundActive) return;
     if (g_time >= g_soundEnd) { StopSound(); Notify("Sound finished; microphone restored"); return; }
     if (g_soundRemote && Alive(g_soundRecorder.get()) && G.recorderGetTransmitting.IsValid() &&
-        !G.recorderGetTransmitting[g_soundRecorder.get()]() && g_time + 0.75 < g_soundEnd) {
+        !G.recorderGetTransmitting[g_soundRecorder.get()]() && g_time >= g_soundStarted + 1.5 && g_time + 0.1 < g_soundEnd) {
         StopSound(); Notify("Voice stream stopped; microphone restored");
     }
 }
