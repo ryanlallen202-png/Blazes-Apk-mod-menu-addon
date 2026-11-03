@@ -1,0 +1,126 @@
+"""Host-side regression checks; these do not replace Unity/headset tests.
+Run: python3 mods/dark-matter/tests/test_soundboard.py
+"""
+import pathlib
+import shutil
+import struct
+import subprocess
+import tempfile
+import unittest
+
+SOURCE = pathlib.Path(__file__).resolve().parents[1] / "src/menu.cpp"
+
+
+class SoundboardTests(unittest.TestCase):
+    def test_wav_parser(self):
+        compiler = shutil.which("c++")
+        if not compiler:
+            self.skipTest("A host C++ compiler is required")
+        source = SOURCE.read_text()
+        parser = source[source.index("struct WavInfo"):source.index("static std::string PersistentPath")]
+
+        def wav(channels=1, rate=44100, data=b"\0\0" * 8, bits=16):
+            fmt = struct.pack("<HHIIHH", 1, channels, rate, rate * channels * 2, channels * 2, bits)
+            body = b"WAVEfmt " + struct.pack("<I", len(fmt)) + fmt + b"data" + struct.pack("<I", len(data)) + data
+            return b"RIFF" + struct.pack("<I", len(body)) + body
+
+        cases = [(wav(), True), (wav(channels=2), True), (wav(rate=8000), True),
+                 (wav(rate=48000), True), (wav(channels=3), False),
+                 (wav(rate=7999), False), (wav(rate=48001), False),
+                 (wav(bits=8), False), (wav(data=b""), False),
+                 (wav(channels=2, data=b"\0\0"), False),
+                 (wav()[:-1], False), (b"not a WAV", False)]
+        checks = []
+        for data, expected in cases:
+            values = ",".join(str(v) for v in data)
+            checks.append("{ WavInfo w; std::vector<uint8_t> b = {" + values + "}; assert(ParseWav(b,w) == " + str(expected).lower() + "); }")
+        program = "#include <vector>\n#include <cstdint>\n#include <cstring>\n#include <cassert>\n" + parser + "\nint main() {\n" + "\n".join(checks) + "\n}\n"
+        with tempfile.TemporaryDirectory() as directory:
+            cpp = pathlib.Path(directory) / "wav_test.cpp"
+            exe = pathlib.Path(directory) / "wav_test"
+            cpp.write_text(program)
+            subprocess.run([compiler, "-std=c++20", "-Wall", "-Wextra", "-Werror", str(cpp), "-o", str(exe)], check=True)
+            subprocess.run([str(exe)], check=True)
+
+    def test_menu_syntax(self):
+        """Parse the full translation unit; platform declarations are host-only shims."""
+        compiler = shutil.which("c++")
+        if not compiler:
+            self.skipTest("A host C++ compiler is required")
+        root = SOURCE.parents[3]
+        with tempfile.TemporaryDirectory() as directory:
+            include = pathlib.Path(directory)
+            (include / "android").mkdir()
+            (include / "jni.h").write_text("#pragma once\nstruct JNIEnv; typedef void *jobject;\n")
+            (include / "android/log.h").write_text('#pragma once\nextern "C" int __android_log_print(int, const char *, const char *, ...);\n')
+            subprocess.run([compiler, "-std=c++20", "-DNDEBUG", "-D__has_feature(x)=0", "-fsyntax-only",
+                            "-I" + directory, "-I" + str(root / "sdk/include"),
+                            "-I" + str(root / "sdk/bnm/include"),
+                            "-I" + str(root / "sdk/bnm/external/include"), str(SOURCE)], check=True)
+
+    def test_mp3_decoder(self):
+        """Generate real mono/stereo MP3 fixtures without committing binary audio."""
+        try:
+            import lameenc
+        except ImportError:
+            self.skipTest("Install optional lameenc in a virtualenv for MP3 fixture tests")
+        compiler = shutil.which("c++")
+        if not compiler:
+            self.skipTest("A host C++ compiler is required")
+        import math
+        with tempfile.TemporaryDirectory() as directory:
+            tmp = pathlib.Path(directory)
+            fixtures = []
+            for channels in (1, 2):
+                encoder = lameenc.Encoder()
+                encoder.set_bit_rate(128)
+                encoder.set_in_sample_rate(44100)
+                encoder.set_channels(channels)
+                encoder.set_quality(2)
+                pcm = b"".join(struct.pack("<h", int(4000 * math.sin(2 * math.pi * 440 * n / 44100)))
+                               * channels for n in range(44100))
+                fixture = tmp / (str(channels) + ".mp3")
+                fixture.write_bytes(encoder.encode(pcm) + encoder.flush())
+                fixtures.append(str(fixture))
+            program = '''#include <cassert>
+#include <vector>
+#include <cmath>
+#include "dr_mp3.h"
+int main(int argc, char **argv) {
+    assert(argc == 3);
+    for (int channels = 1; channels <= 2; ++channels) {
+        drmp3 decoder{};
+        assert(drmp3_init_file(&decoder, argv[channels], nullptr));
+        assert(decoder.channels == (unsigned)channels);
+        assert(decoder.sampleRate == 44100);
+        auto count = drmp3_get_pcm_frame_count(&decoder);
+        assert(count >= 44100 && count < 48000);
+        std::vector<float> pcm(count * channels);
+        assert(drmp3_read_pcm_frames_f32(&decoder, count, pcm.data()) == count);
+        float peak = 0;
+        for (float sample : pcm) { assert(std::isfinite(sample)); peak = std::fmax(peak, std::fabs(sample)); }
+        assert(peak > 0.01f && peak < 1.0f);
+        drmp3_uninit(&decoder);
+    }
+}
+'''
+            cpp = tmp / "mp3_test.cpp"
+            exe = tmp / "mp3_test"
+            cpp.write_text(program)
+            subprocess.run([compiler, "-std=c++20", "-I" + str(SOURCE.parent), str(cpp),
+                            str(SOURCE.parent / "dr_mp3_impl.cpp"), "-o", str(exe)], check=True)
+            subprocess.run([str(exe), *fixtures], check=True)
+
+    def test_upload_and_playback_guards(self):
+        source = SOURCE.read_text()
+        self.assertIn("G.audioClipSetData[g_soundClip.get()](arr, (int)g_soundLoadOffset)", source)
+        self.assertIn("if (state != 2) return;", source)
+        self.assertIn("const std::string &p = g_soundPlayingPath;", source)
+        start = source.index("static void StopSound() {")
+        stop = source[start:source.index("static void SoundVolumeUp() {", start)]
+        self.assertNotIn("g_soundNextAllowed =", stop)
+        self.assertIn("++g_soundGeneration", stop)
+
+
+if __name__ == "__main__":
+    unittest.main()
