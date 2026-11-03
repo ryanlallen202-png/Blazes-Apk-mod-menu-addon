@@ -14,7 +14,13 @@
 #include <cctype>
 #include <dirent.h>
 #include <fstream>
+#include <fcntl.h>
+#include <unistd.h>
 #include <sys/stat.h>
+#include <sys/types.h>
+#include <media/NdkMediaCodec.h>
+#include <media/NdkMediaExtractor.h>
+#include <media/NdkMediaFormat.h>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -111,7 +117,13 @@ static struct {
     Method<Il2CppObject *> audioClipCreate, applicationPersistentPath;
     Method<bool> audioClipSetData;
     Method<void> audioSourceSetClip, audioSourcePlay, audioSourceStop, audioSourceSetVolume, audioSourceSetSpatialBlend;
-    BNM::MonoType *tAudioSource = nullptr;
+    BNM::MonoType *tAudioSource = nullptr, *tRecorder = nullptr;
+    Method<int> recorderGetSourceType;
+    Method<void> recorderSetSourceType, recorderSetAudioClip, recorderSetLoopAudioClip, recorderRestart;
+    Method<Il2CppObject *> recorderGetAudioClip;
+    Method<bool> recorderGetLoopAudioClip, recorderGetVoiceDetection, recorderGetTransmitEnabled,
+                 recorderGetTransmitting, recorderGetRecording;
+    Method<void> recorderSetVoiceDetection, recorderSetRecording;
     Method<void> goSetLayer;
     BNM::MonoType *tRigidbody = nullptr, *tCollider = nullptr, *tCanvas = nullptr, *tText = nullptr,
                   *tFont = nullptr, *tRenderer = nullptr, *tMeshCollider = nullptr, *tLine = nullptr;
@@ -145,6 +157,25 @@ static bool Lookups() {
     G.audioSourceSetSpatialBlend = audioSource.GetMethod("set_spatialBlend", 1);
     G.tAudioSource = audioSource.GetMonoType();
     G.applicationPersistentPath = application.GetMethod("get_persistentDataPath", 0);
+    Class recorder("Photon.Voice.Unity", "Recorder");
+    if (recorder.IsValid()) {
+        G.tRecorder = recorder.GetMonoType();
+        G.recorderGetSourceType = recorder.GetMethod("get_SourceType", 0);
+        G.recorderSetSourceType = recorder.GetMethod("set_SourceType", 1);
+        G.recorderGetAudioClip = recorder.GetMethod("get_AudioClip", 0);
+        G.recorderSetAudioClip = recorder.GetMethod("set_AudioClip", 1);
+        G.recorderGetLoopAudioClip = recorder.GetMethod("get_LoopAudioClip", 0);
+        G.recorderSetLoopAudioClip = recorder.GetMethod("set_LoopAudioClip", 1);
+        G.recorderGetVoiceDetection = recorder.GetMethod("get_VoiceDetection", 0);
+        G.recorderSetVoiceDetection = recorder.GetMethod("set_VoiceDetection", 1);
+        G.recorderGetTransmitEnabled = recorder.GetMethod("get_TransmitEnabled", 0);
+        G.recorderGetTransmitting = recorder.GetMethod("get_IsCurrentlyTransmitting", 0);
+        G.recorderGetRecording = recorder.GetMethod("get_RecordingEnabled", 0);
+        if (!G.recorderGetRecording.IsValid()) G.recorderGetRecording = recorder.GetMethod("get_IsRecording", 0);
+        G.recorderSetRecording = recorder.GetMethod("set_RecordingEnabled", 1);
+        if (!G.recorderSetRecording.IsValid()) G.recorderSetRecording = recorder.GetMethod("set_IsRecording", 1);
+        G.recorderRestart = recorder.GetMethod("RestartRecording", 0);
+    }
     G.goSetActive = go.GetMethod("SetActive", 1);
     Class comp("UnityEngine", "Component");
     G.compTransform = comp.GetMethod("get_transform", 0);
@@ -1551,9 +1582,9 @@ static void MovementExtrasTick(const Buttons &in) {
 }
 
 
-// ---- local soundboard -------------------------------------------------------
-// This is local headset playback only. The repository forbids network activity;
-// it does not inject audio into the game's microphone or transmit clips to a lobby.
+// ---- multiplayer soundboard -------------------------------------------------
+// Uses Photon Voice's Recorder audio-clip input. The clip is sent through the
+// local player's existing voice stream; it is not a custom room RPC.
 struct WavInfo { int channels = 0, sampleRate = 0; size_t dataOffset = 0, dataBytes = 0; };
 static uint16_t Read16(const std::vector<uint8_t> &b, size_t p) {
     return (uint16_t)b[p] | ((uint16_t)b[p + 1] << 8);
@@ -1581,47 +1612,160 @@ static bool ParseWav(const std::vector<uint8_t> &b, WavInfo &w) {
     return fmt && data && (w.channels == 1 || w.channels == 2) &&
            w.sampleRate >= 8000 && w.sampleRate <= 48000 && w.dataBytes >= 2;
 }
-static std::string PersistentPath() {
-    if (!G.applicationPersistentPath.IsValid()) return "";
-    auto *v = (Il2CppObject *)G.applicationPersistentPath();
-    if (!v) return "";
-    struct ManagedString { void *klass; void *monitor; int32_t length; char16_t chars[1]; };
-    auto *m = (ManagedString *)v;
-    std::string out;
-    for (int i = 0; i < m->length; ++i) {
-        char16_t c = m->chars[i];
-        if (c > 0x7f) return "";
-        out.push_back((char)c);
+static bool DecodeMp3(const std::string &path, std::vector<float> &pcm, int &channels, int &sampleRate) {
+    int fd = open(path.c_str(), O_RDONLY);
+    if (fd < 0) return false;
+    struct stat st{};
+    if (fstat(fd, &st) != 0 || st.st_size <= 0) { close(fd); return false; }
+    AMediaExtractor *ex = AMediaExtractor_new();
+    AMediaCodec *codec = nullptr;
+    AMediaFormat *trackFormat = nullptr;
+    bool ok = ex && AMediaExtractor_setDataSourceFd(ex, fd, 0, st.st_size) == AMEDIA_OK;
+    close(fd);
+    ssize_t track = -1;
+    if (ok) {
+        size_t tracks = AMediaExtractor_getTrackCount(ex);
+        for (size_t i = 0; i < tracks; ++i) {
+            AMediaFormat *fmt = AMediaExtractor_getTrackFormat(ex, i);
+            const char *mime = nullptr;
+            if (fmt && AMediaFormat_getString(fmt, AMEDIAFORMAT_KEY_MIME, &mime) && mime &&
+                strncmp(mime, "audio/", 6) == 0) { track = (ssize_t)i; trackFormat = fmt; break; }
+            if (fmt) AMediaFormat_delete(fmt);
+        }
+        ok = track >= 0 && trackFormat;
     }
-    return out;
+    const char *mime = nullptr;
+    if (ok) ok = AMediaFormat_getString(trackFormat, AMEDIAFORMAT_KEY_MIME, &mime) && mime;
+    if (ok) { codec = AMediaCodec_createDecoderByType(mime); ok = codec != nullptr; }
+    if (ok) ok = AMediaExtractor_selectTrack(ex, (size_t)track) == AMEDIA_OK;
+    if (ok) ok = AMediaCodec_configure(codec, trackFormat, nullptr, nullptr, 0) == AMEDIA_OK;
+    if (ok) ok = AMediaCodec_start(codec) == AMEDIA_OK;
+    bool inputDone = false, outputDone = false;
+    int32_t outChannels = 0, outRate = 0;
+    size_t sampleCap = 48000u * 2u * 30u;
+    while (ok && !outputDone && pcm.size() < sampleCap) {
+        if (!inputDone) {
+            ssize_t inIndex = AMediaCodec_dequeueInputBuffer(codec, 1000);
+            if (inIndex >= 0) {
+                size_t cap = 0;
+                uint8_t *in = AMediaCodec_getInputBuffer(codec, (size_t)inIndex, &cap);
+                ssize_t n = in ? AMediaExtractor_readSampleData(ex, in, cap) : -1;
+                if (n < 0) {
+                    AMediaCodec_queueInputBuffer(codec, (size_t)inIndex, 0, 0, 0, AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM);
+                    inputDone = true;
+                } else {
+                    int64_t pts = AMediaExtractor_getSampleTime(ex);
+                    AMediaCodec_queueInputBuffer(codec, (size_t)inIndex, 0, (size_t)n, pts < 0 ? 0 : (uint64_t)pts, 0);
+                    AMediaExtractor_advance(ex);
+                }
+            }
+        }
+        AMediaCodecBufferInfo info{};
+        ssize_t outIndex = AMediaCodec_dequeueOutputBuffer(codec, &info, 1000);
+        if (outIndex == AMEDIACODEC_INFO_OUTPUT_FORMAT_CHANGED) {
+            AMediaFormat *fmt = AMediaCodec_getOutputFormat(codec);
+            if (fmt) {
+                AMediaFormat_getInt32(fmt, AMEDIAFORMAT_KEY_CHANNEL_COUNT, &outChannels);
+                AMediaFormat_getInt32(fmt, AMEDIAFORMAT_KEY_SAMPLE_RATE, &outRate);
+                AMediaFormat_delete(fmt);
+            }
+        } else if (outIndex >= 0) {
+            size_t cap = 0;
+            uint8_t *out = AMediaCodec_getOutputBuffer(codec, (size_t)outIndex, &cap);
+            if (out && info.size > 0 && info.offset + (size_t)info.size <= cap) {
+                const int16_t *samples = (const int16_t *)(out + info.offset);
+                size_t count = (size_t)info.size / sizeof(int16_t);
+                for (size_t i = 0; i < count && pcm.size() < sampleCap; ++i)
+                    pcm.push_back((float)samples[i] / 32768.0f);
+            }
+            if (info.flags & AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM) outputDone = true;
+            AMediaCodec_releaseOutputBuffer(codec, (size_t)outIndex, false);
+        }
+    }
+    if (pcm.empty() || !outChannels || !outRate || outChannels > 2 || outRate < 8000 || outRate > 48000)
+        ok = false;
+    channels = outChannels; sampleRate = outRate;
+    if (codec) { AMediaCodec_stop(codec); AMediaCodec_delete(codec); }
+    if (trackFormat) AMediaFormat_delete(trackFormat);
+    if (ex) AMediaExtractor_delete(ex);
+    return ok;
+}
+static bool LoadSound(const std::string &path, std::vector<float> &pcm, int &channels, int &sampleRate) {
+    std::string ext = path.substr(path.find_last_of('.') == std::string::npos ? path.size() : path.find_last_of('.'));
+    for (char &c : ext) c = (char)tolower((unsigned char)c);
+    if (ext == ".mp3") return DecodeMp3(path, pcm, channels, sampleRate);
+    std::ifstream in(path, std::ios::binary);
+    std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    WavInfo w;
+    if (!in.good() && bytes.empty()) return false;
+    if (!ParseWav(bytes, w)) return false;
+    size_t frameBytes = (size_t)w.channels * 2;
+    size_t frames = w.dataBytes / frameBytes;
+    if (!frames || frames > (size_t)w.sampleRate * 30) return false;
+    pcm.resize(frames * (size_t)w.channels);
+    for (size_t i = 0; i < pcm.size(); ++i) {
+        int16_t v = (int16_t)Read16(bytes, w.dataOffset + i * 2);
+        pcm[i] = (float)v / 32768.0f;
+    }
+    channels = w.channels; sampleRate = w.sampleRate;
+    return true;
+}
+static std::string ModsSoundPath() {
+    const char *dir = ym::api() ? ym::api()->modsDir : nullptr;
+    return dir && dir[0] ? std::string(dir) + "/sounds" : "";
+}
+static std::vector<std::string> g_soundFiles;
+static size_t g_soundIndex = 0;
+static float g_soundVolume = 0.65f;
+static double g_soundEnd = 0, g_nextSoundPlay = 0;
+static bool g_soundActive = false, g_soundRemote = false;
+static Ref g_soundClip, g_soundSource, g_soundRecorder, g_oldRecorderClip;
+static int g_oldSourceType = 0;
+static bool g_oldLoop = false, g_oldVoiceDetection = false, g_oldRecording = false;
+static bool g_haveOldVoiceDetection = false, g_haveOldRecording = false;
+static std::string g_soundDirectory;
+
+static void RestoreVoiceRecorder() {
+    Il2CppObject *rec = g_soundRecorder.get();
+    if (Alive(rec)) {
+        if (G.recorderSetAudioClip.IsValid()) G.recorderSetAudioClip[rec](g_oldRecorderClip.get());
+        if (G.recorderSetLoopAudioClip.IsValid()) G.recorderSetLoopAudioClip[rec](g_oldLoop);
+        if (G.recorderSetSourceType.IsValid()) G.recorderSetSourceType[rec](g_oldSourceType);
+        if (g_haveOldVoiceDetection && G.recorderSetVoiceDetection.IsValid()) G.recorderSetVoiceDetection[rec](g_oldVoiceDetection);
+        if (g_haveOldRecording && G.recorderSetRecording.IsValid()) G.recorderSetRecording[rec](g_oldRecording);
+        if (G.recorderRestart.IsValid()) G.recorderRestart[rec]();
+    }
+    g_soundRecorder.clear(); g_oldRecorderClip.clear();
+    g_soundRemote = false;
+}
+static void StopSound() {
+    if (g_soundRemote) RestoreVoiceRecorder();
+    if (Alive(g_soundSource.get()) && G.audioSourceStop.IsValid()) G.audioSourceStop[g_soundSource.get()]();
+    if (Alive(g_soundSource.get()) && G.audioSourceSetClip.IsValid()) G.audioSourceSetClip[g_soundSource.get()](nullptr);
+    Kill(g_soundClip);
+    g_soundActive = false;
+    g_soundEnd = 0;
 }
 static void ScanSounds() {
-    std::string base = PersistentPath();
-    if (base.empty()) { Notify("Soundboard path unavailable"); return; }
-    g_soundDirectory = base + "/sounds";
-    mkdir(g_soundDirectory.c_str(), 0775);
+    g_soundDirectory = ModsSoundPath();
+    if (g_soundDirectory.empty()) { Notify("Mods folder unavailable"); return; }
     g_soundFiles.clear();
     DIR *d = opendir(g_soundDirectory.c_str());
-    if (!d) { Notify("Could not open sounds folder"); return; }
+    if (!d) { Notify("Create mods/sounds folder first"); return; }
     while (dirent *e = readdir(d)) {
         std::string n = e->d_name;
         if (n.size() < 5) continue;
-        std::string ext = n.substr(n.size() - 4);
+        std::string ext = n.substr(n.find_last_of('.'));
         for (char &c : ext) c = (char)tolower((unsigned char)c);
-        if (ext == ".wav") g_soundFiles.push_back(g_soundDirectory + "/" + n);
+        if (ext == ".wav" || ext == ".mp3") g_soundFiles.push_back(g_soundDirectory + "/" + n);
     }
     closedir(d);
     std::sort(g_soundFiles.begin(), g_soundFiles.end());
     g_soundIndex = 0;
-    Notify("Found %d WAV files", (int)g_soundFiles.size());
-}
-static void StopSound() {
-    if (Alive(g_soundSource.get()) && G.audioSourceStop.IsValid()) G.audioSourceStop[g_soundSource.get()]();
-    if (Alive(g_soundSource.get()) && G.audioSourceSetClip.IsValid()) G.audioSourceSetClip[g_soundSource.get()](nullptr);
-    Kill(g_soundClip);
+    Notify("Found %d WAV/MP3 files", (int)g_soundFiles.size());
 }
 static void SelectSound(int direction) {
-    if (g_soundFiles.empty()) { Notify("No WAV files. Scan sounds folder first"); return; }
+    if (g_soundFiles.empty()) { Notify("No sounds. Scan sounds folder first"); return; }
     int n = (int)g_soundFiles.size();
     g_soundIndex = (size_t)((((int)g_soundIndex + direction) % n + n) % n);
     const std::string &p = g_soundFiles[g_soundIndex];
@@ -1640,57 +1784,99 @@ static void SoundVolumeDown() {
     if (Alive(g_soundSource.get())) G.audioSourceSetVolume[g_soundSource.get()](g_soundVolume);
     Notify("Sound volume: %d%%", (int)(g_soundVolume * 100));
 }
+static bool BeginVoicePlayback(Il2CppObject *clip) {
+    if (!G.tRecorder || !G.findAll.IsValid() || !G.recorderGetSourceType.IsValid() ||
+        !G.recorderSetSourceType.IsValid() || !G.recorderSetAudioClip.IsValid() ||
+        !G.recorderSetLoopAudioClip.IsValid() || !G.recorderRestart.IsValid()) return false;
+    auto *arr = (uint8_t *)G.findAll((Il2CppObject *)G.tRecorder);
+    size_t count = arr ? *(uintptr_t *)(arr + 0x18) : 0;
+    Il2CppObject **items = arr ? (Il2CppObject **)(arr + 0x20) : nullptr;
+    for (size_t i = 0; i < count; ++i) {
+        Il2CppObject *rec = items[i];
+        if (!Alive(rec)) continue;
+        if (G.recorderGetTransmitEnabled.IsValid() && !G.recorderGetTransmitEnabled[rec]()) continue;
+        if (G.recorderGetRecording.IsValid() && !G.recorderGetRecording[rec]()) continue;
+        if (G.recorderGetTransmitting.IsValid() && !G.recorderGetTransmitting[rec]()) continue;
+        g_oldSourceType = G.recorderGetSourceType[rec]();
+        g_oldRecorderClip.set(G.recorderGetAudioClip.IsValid() ? G.recorderGetAudioClip[rec]() : nullptr);
+        g_oldLoop = G.recorderGetLoopAudioClip.IsValid() ? G.recorderGetLoopAudioClip[rec]() : false;
+        g_haveOldVoiceDetection = G.recorderGetVoiceDetection.IsValid() && G.recorderSetVoiceDetection.IsValid();
+        if (g_haveOldVoiceDetection) g_oldVoiceDetection = G.recorderGetVoiceDetection[rec]();
+        g_haveOldRecording = G.recorderGetRecording.IsValid() && G.recorderSetRecording.IsValid();
+        if (g_haveOldRecording) g_oldRecording = G.recorderGetRecording[rec]();
+        g_soundRecorder.set(rec);
+        // Photon Voice InputSourceType.AudioClip is enum value 1.
+        G.recorderSetLoopAudioClip[rec](false);
+        if (G.recorderSetVoiceDetection.IsValid()) G.recorderSetVoiceDetection[rec](false);
+        G.recorderSetAudioClip[rec](clip);
+        G.recorderSetSourceType[rec](1);
+        G.recorderRestart[rec]();
+        g_soundRemote = true;
+        return true;
+    }
+    return false;
+}
 static void PlaySound() {
+    if (g_soundActive || g_time < g_nextSoundPlay) { Notify("Soundboard is busy"); return; }
     if (g_soundFiles.empty()) ScanSounds();
     if (g_soundFiles.empty()) return;
-    if (!G.audioClipCreate.IsValid() || !G.audioClipSetData.IsValid() ||
-        !G.tAudioSource || !G.arrayNew || !G.audioSourcePlay.IsValid()) {
+    if (!G.audioClipCreate.IsValid() || !G.audioClipSetData.IsValid() || !G.arrayNew) {
         Notify("Unity audio methods unavailable"); return;
     }
-    std::ifstream in(g_soundFiles[g_soundIndex], std::ios::binary);
-    std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-    WavInfo w;
-    if (!in.good() && bytes.empty()) { Notify("Could not read WAV file"); return; }
-    if (!ParseWav(bytes, w)) { Notify("Use PCM 16-bit mono/stereo WAV"); return; }
-    size_t frameBytes = (size_t)w.channels * 2;
-    size_t frames = w.dataBytes / frameBytes;
-    if (!frames || frames > (size_t)w.sampleRate * 30) { Notify("WAV must be 30 seconds or shorter"); return; }
-    size_t count = frames * (size_t)w.channels;
-    std::vector<float> pcm(count);
-    for (size_t i = 0; i < count; ++i) {
-        int16_t v = (int16_t)Read16(bytes, w.dataOffset + i * 2);
-        pcm[i] = (float)v / 32768.0f;
+    std::vector<float> pcm;
+    int channels = 0, sampleRate = 0;
+    const std::string path = g_soundFiles[g_soundIndex];
+    if (!LoadSound(path, pcm, channels, sampleRate) || pcm.empty()) {
+        Notify("Could not decode WAV/MP3 (max 30 sec)"); return;
     }
-    void *managed = G.arrayNew(Class("System", "Single").GetClass(), (uintptr_t)count);
+    size_t frames = pcm.size() / (size_t)channels;
+    if (!frames || frames > (size_t)sampleRate * 30) { Notify("Sound must be 30 seconds or shorter"); return; }
+    for (float &v : pcm) v = fmaxf(-1.0f, fminf(1.0f, v * g_soundVolume));
+    void *managed = G.arrayNew(Class("System", "Single").GetClass(), (uintptr_t)pcm.size());
     if (!managed) { Notify("Could not allocate audio buffer"); return; }
-    memcpy((uint8_t *)managed + 0x20, pcm.data(), count * sizeof(float));
+    memcpy((uint8_t *)managed + 0x20, pcm.data(), pcm.size() * sizeof(float));
     StopSound();
-    Il2CppObject *clip = G.audioClipCreate(CreateMonoString("DARK MATTER Sound"),
-        (int)frames, w.channels, w.sampleRate, false);
+    Il2CppObject *clip = G.audioClipCreate(CreateMonoString("DARK MATTER Sound"), (int)frames, channels, sampleRate, false);
     if (!clip || !G.audioClipSetData[clip](managed, 0)) {
         if (clip) G.destroy(clip);
         Notify("Could not create audio clip"); return;
     }
     g_soundClip.set(clip);
-    if (!Alive(g_soundSource.get())) {
-        Il2CppObject *go = Class("UnityEngine", "GameObject").CreateNewObjectParameters(CreateMonoString("DARK MATTER Soundboard"));
-        Il2CppObject *source = go ? G.goAddComponent[go](G.tAudioSource) : nullptr;
-        if (!source) { if (go) G.destroy(go); Kill(g_soundClip); Notify("Could not create audio source"); return; }
-        g_soundSource.set(source);
-        if (g_head.get()) G.trSetParent[Tr(go)](Tr(g_head.get()), false);
-        G.audioSourceSetSpatialBlend[source](0.0f); // 2D, local headset playback
+    bool remote = BeginVoicePlayback(clip);
+    if (!remote) {
+        if (!Alive(g_soundSource.get())) {
+            Il2CppObject *go = Class("UnityEngine", "GameObject").CreateNewObjectParameters(CreateMonoString("DARK MATTER Soundboard"));
+            Il2CppObject *source = go ? G.goAddComponent[go](G.tAudioSource) : nullptr;
+            if (!source) { if (go) G.destroy(go); Kill(g_soundClip); Notify("No Photon recorder; local playback unavailable"); return; }
+            g_soundSource.set(source);
+            if (g_head.get()) G.trSetParent[Tr(go)](Tr(g_head.get()), false);
+            G.audioSourceSetSpatialBlend[source](0.0f);
+        }
+        G.audioSourceSetVolume[g_soundSource.get()](1.0f);
+        G.audioSourceSetClip[g_soundSource.get()](clip);
+        G.audioSourcePlay[g_soundSource.get()]();
     }
-    G.audioSourceSetVolume[g_soundSource.get()](g_soundVolume);
-    G.audioSourceSetClip[g_soundSource.get()](clip);
-    G.audioSourcePlay[g_soundSource.get()]();
-    const std::string &p = g_soundFiles[g_soundIndex];
-    size_t slash = p.find_last_of('/');
-    Notify("Playing: %s", slash == std::string::npos ? p.c_str() : p.c_str() + slash + 1);
+    g_soundActive = true;
+    double duration = (double)frames / (double)sampleRate;
+    g_soundEnd = g_time + duration;
+    g_nextSoundPlay = g_time + fmax(1.0, duration);
+    size_t slash = path.find_last_of('/');
+    Notify(remote ? "Sending to room: %s" : "Local only: %s",
+           slash == std::string::npos ? path.c_str() : path.c_str() + slash + 1);
+}
+static void SoundboardTick() {
+    if (!g_soundActive) return;
+    if (g_time >= g_soundEnd) { StopSound(); Notify("Sound finished; microphone restored"); return; }
+    if (g_soundRemote && Alive(g_soundRecorder.get()) && G.recorderGetTransmitting.IsValid() &&
+        !G.recorderGetTransmitting[g_soundRecorder.get()]() && g_time + 0.75 < g_soundEnd) {
+        StopSound(); Notify("Voice stream stopped; microphone restored");
+    }
 }
 
 static void OnUpdate(float dt) {
     g_time += dt;
     g_frames++;
+    SoundboardTick();
     static double fpsStart = 0;
     if (g_time - fpsStart >= 1.0) { g_fps = (float)(g_frames / (g_time - fpsStart)); g_frames = 0; fpsStart = g_time; }
     if (!Lookups()) return;
