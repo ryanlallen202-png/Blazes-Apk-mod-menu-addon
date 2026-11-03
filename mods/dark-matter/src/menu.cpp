@@ -166,7 +166,7 @@ static bool Lookups() {
         if (flt.IsValid()) G.floatClass = flt.GetClass();
         if (aclip.IsValid()) {
             G.audioClipCreate = Overload(aclip, "Create", {"System.String", "System.Int32", "System.Int32", "System.Int32", "System.Boolean"});
-            G.audioClipSetData = aclip.GetMethod("SetData", 2);
+            G.audioClipSetData = Overload(aclip, "SetData", {"System.Single[]", "System.Int32"});
         }
         if (asrc.IsValid()) {
             G.tAudioSource = asrc.GetMonoType();
@@ -2157,7 +2157,7 @@ static void SoundLoadTick() {
     g_soundLoadStage = 3;
     memcpy(managedData, source, samplesNow * sizeof(float));
     g_soundLoadStage = 4;
-    if (!G.audioClipSetData[g_soundClip.get()](arr, (int)(g_soundLoadOffset * g_soundLoadChannels))) {
+    if (!G.audioClipSetData[g_soundClip.get()](arr, (int)g_soundLoadOffset)) {
         g_soundLoadStage = 0; StopSound(); Notify("Unity rejected sound data"); return;
     }
     g_soundLoadStage = 0;
