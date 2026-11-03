@@ -619,12 +619,12 @@ static const Theme &T() { return kThemes[g_theme]; }
 
 // Layout in meters, matching ii's menu as it was ported to Yeeps. Everything is drawn
 // on a "board" object: +x goes across, +y goes up, the player looks at it from -z.
-static constexpr int kRows = 8;                                   // buttons per page
-static const float kBoardW = 0.46f, kBoardH = 0.43f, kBtnW = 0.205f, kBtnH = 0.058f;
-static const float kTitleY = 0.18f, kSideX = 0.20f, kSideW = 0.055f, kSideH = 0.055f;
-static const float kSideY = 0.18f;
-static float RowY(int r) { return 0.105f - (r / 2) * 0.074f; }
-static float ColX(int r) { return (r % 2 == 0) ? -0.112f : 0.112f; }
+static constexpr int kRows = 10;                                  // five roomy rows per column
+static const float kBoardW = 0.62f, kBoardH = 0.59f, kBtnW = 0.28f, kBtnH = 0.073f;
+static const float kTitleY = 0.245f, kSideX = 0.27f, kSideW = 0.065f, kSideH = 0.065f;
+static const float kSideY = 0.245f;
+static float RowY(int r) { return 0.205f - (r / 2) * 0.09f; }
+static float ColX(int r) { return (r % 2 == 0) ? -0.155f : 0.155f; }
 
 static Ref g_menu, g_board, g_bg, g_outline, g_pointer, g_title, g_titleBar;
 static Ref g_rowCube[kRows], g_rowLabel[kRows], g_rowText[kRows];
@@ -676,7 +676,7 @@ static Il2CppObject *Label(Il2CppObject *canvasT, const char *s, Vector3 pos, fl
     if (G.textSetFontStyle.IsValid()) G.textSetFontStyle[text](1);   // Bold, crisp dashboard typography
     if (G.textSetBestFit.IsValid()) {            // shrink long labels to fit their button
         G.textSetBestFit[text](true);
-        G.textSetMinSize[text](1);
+        G.textSetMinSize[text](size >= 20 ? 16 : size >= 16 ? 14 : size);
         G.textSetMaxSize[text](size);
     }
     G.graphicSetColor[text](Color(1, 1, 1, 1));
@@ -746,20 +746,20 @@ static void BuildMenu() {
         g_rowCube[r].set(Part(bt, T().button, Vector3(ColX(r), RowY(r), -0.005f), Vector3(kBtnW, kBtnH, 0.009f)));
     g_prev.set(Part(bt, T().button, Vector3(-kSideX, kSideY, 0), Vector3(kSideW, kSideH, 0.009f)));
     // Wide header with compact page controls: a new landscape console layout.
-    g_titleBar.set(Part(bt, T().buttonOn, Vector3(0, kTitleY, -0.002f), Vector3(kBoardW - 0.11f, 0.045f, 0.009f)));
+    g_titleBar.set(Part(bt, T().buttonOn, Vector3(0, kTitleY, -0.002f), Vector3(kBoardW - 0.16f, 0.055f, 0.009f)));
     g_next.set(Part(bt, T().button, Vector3(kSideX, kSideY, 0), Vector3(kSideW, kSideH, 0.009f)));
 
-    if (Il2CppObject *canvas = Canvas(bt, Vector3(0, 0, -0.0105f), kBoardW + 0.04f, kBoardH + 0.1f)) {
+    if (Il2CppObject *canvas = Canvas(bt, Vector3(0, 0, -0.0105f), kBoardW + 0.04f, kBoardH + 0.12f)) {
         Il2CppObject *ct = Tr(canvas);
-        Label(ct, "DARK MATTER", Vector3(0, kTitleY, 0), kBoardW - 0.11f, 0.045f, 26, &g_title);
+        Label(ct, "DARK MATTER", Vector3(0, kTitleY, 0), kBoardW - 0.16f, 0.055f, 30, &g_title);
         for (int r = 0; r < kRows; r++)
-            g_rowLabel[r].set(Label(ct, "", Vector3(ColX(r), RowY(r), 0), kBtnW, kBtnH, 17, &g_rowText[r]));
-        Label(ct, "<", Vector3(-kSideX, kSideY, -0.0005f), kSideW, 0.05f, 28, nullptr);
-        Label(ct, ">", Vector3(kSideX, kSideY, -0.0005f), kSideW, 0.05f, 28, nullptr);
-        Label(ct, "", Vector3(0, -kBoardH / 2 - 0.02f, 0), kBoardW + 0.1f, 0.03f, 15, &g_tipText);
+            g_rowLabel[r].set(Label(ct, "", Vector3(ColX(r), RowY(r), 0), kBtnW, kBtnH, 20, &g_rowText[r]));
+        Label(ct, "<", Vector3(-kSideX, kSideY, -0.0005f), kSideW, 0.06f, 30, nullptr);
+        Label(ct, ">", Vector3(kSideX, kSideY, -0.0005f), kSideW, 0.06f, 30, nullptr);
+        Label(ct, "", Vector3(0, -kBoardH / 2 - 0.025f, 0), kBoardW + 0.1f, 0.035f, 16, &g_tipText);
         char ver[64];
         snprintf(ver, sizeof ver, "DARK MATTER  //  %s", ym::api()->gameVersion);
-        Label(ct, ver, Vector3(0, -kBoardH / 2 + 0.012f, 0), kBoardW, 0.02f, 11, nullptr);
+        Label(ct, ver, Vector3(0, -kBoardH / 2 + 0.018f, 0), kBoardW, 0.022f, 13, nullptr);
     }
     // Pointer: a small ball on the index finger of the other hand
     if (Il2CppObject *p = Prim(0, T().bgB, false)) {
@@ -770,7 +770,7 @@ static void BuildMenu() {
     // Notifications: a line of text low in your view, like ii's notifications
     if (Il2CppObject *n = Canvas(g_head.get(), Vector3(0, -0.12f, 0.6f), 0.5f, 0.05f)) {
         g_notifyGo.set(n);
-        Label(Tr(n), "", Vector3(0, 0, 0), 0.5f, 0.05f, 22, &g_notifyText);
+        Label(Tr(n), "", Vector3(0, 0, 0), 0.62f, 0.06f, 24, &g_notifyText);
         G.goSetActive[n](false);
     }
     G.goSetActive[menu](false);
@@ -802,9 +802,12 @@ static void RenderPage() {
         if (!used) continue;
         Item *it = g_view[i];
         bool on = it->kind == TOGGLE && *it->flag;
-        SetText(g_rowText[r], it->label);
+        char display[160];
+        if (it->kind == TOGGLE) snprintf(display, sizeof display, "%s %s", on ? "[ON]" : "[OFF]", it->label);
+        else snprintf(display, sizeof display, "%s", it->label);
+        SetText(g_rowText[r], display);
         SetColor(g_rowCube[r].get(), r == g_flashRow ? Color(1, 0.9f, 0.6f, 1) : on ? T().buttonOn : T().button);
-        if (Alive(g_rowText[r].get())) G.graphicSetColor[g_rowText[r].get()](on ? Color(1, 1, 1, 1) : T().title);
+        if (Alive(g_rowText[r].get())) G.graphicSetColor[g_rowText[r].get()](Color(1, 1, 1, 1));
     }
     bool pages = PageCount() > 1;
     Show(g_prev, pages);
@@ -841,7 +844,7 @@ static void UpdateTitle() {
         }
         n += snprintf(buf + n, sizeof buf - n, "<b><color=#%02X%02X%02X>%c</color></b>", Hex(c.r), Hex(c.g), Hex(c.b), word[i]);
     }
-    n += snprintf(buf + n, sizeof buf - n, " <color=grey>[</color><color=white>%d</color><color=grey>]</color>", g_page + 1);
+    n += snprintf(buf + n, sizeof buf - n, " <size=17><color=#D8E1F2>%s  |  %d/%d</color></size>", kCatName[g_cat], g_page + 1, PageCount());
     if (f_fps) n += snprintf(buf + n, sizeof buf - n, "<size=16>  %d fps</size>", (int)(g_fps + 0.5f));
     if (f_clock) {
         time_t now = time(nullptr);
