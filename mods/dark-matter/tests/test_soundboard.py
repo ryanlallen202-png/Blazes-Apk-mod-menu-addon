@@ -272,16 +272,62 @@ int main(int argc, char **argv) {
         self.assertNotIn('G.voiceRestartRecording', source)
         playback_start = source.index("static bool StartVoicePlayback")
         playback = source[playback_start:source.index("// ---- soundboard playback", playback_start)]
-        self.assertLess(playback.index("AudioCall<void>(G.voiceStopRecording, recorder)"),
+        self.assertLess(playback.index("SetVoiceRecording(recorder, false)"),
                         playback.index("AudioCall<void>(G.voiceSetAudioClip, recorder, clip)"))
         self.assertLess(playback.index("AudioCall<void>(G.voiceSetSourceType, recorder, 1)"),
-                        playback.index("AudioCall<void>(G.voiceStartRecording, recorder)"))
+                        playback.index("SetVoiceRecording(recorder, true)"))
         restore_start = source.index("static void RestoreVoiceInput() {")
         restore = source[restore_start:playback_start]
-        self.assertLess(restore.index("AudioCall<void>(G.voiceStopRecording, recorder)"),
+        self.assertLess(restore.index("SetVoiceRecording(recorder, false)"),
                         restore.index("AudioCall<void>(G.voiceSetAudioClip, recorder"))
         self.assertLess(restore.index("AudioCall<void>(G.voiceSetSourceType, recorder"),
-                        restore.index("AudioCall<void>(G.voiceStartRecording, recorder)"))
+                        restore.index("SetVoiceRecording(recorder, true)"))
+
+    def test_recording_property_compatibility(self):
+        compiler = shutil.which("c++")
+        if not compiler:
+            self.skipTest("A host C++ compiler is required")
+        source = SOURCE.read_text()
+        start = source.index("static void SetVoiceRecording(")
+        helper = source[start:source.index("static void RestoreVoiceInput() {", start)]
+        program = '''#include <cassert>
+#include <vector>
+struct Il2CppObject {};
+struct Method { int id; bool available; };
+struct { Method voiceSetIsRecording{1, true}, voiceStartRecording{2, true}, voiceStopRecording{3, true}; } G;
+static std::vector<int> calls;
+static bool AudioCallable(const Method &method) { return method.available; }
+template<class Result, class... Args>
+static Result AudioCall(const Method &method, Il2CppObject *recorder, Args... args) {
+    assert(method.available && recorder);
+    calls.push_back(method.id);
+    if constexpr (sizeof...(Args) == 1) {
+        bool values[] = {args...};
+        calls.push_back(values[0] ? 10 : 20);
+    }
+}
+'''+helper+'''
+int main() {
+    Il2CppObject recorder;
+    SetVoiceRecording(&recorder, false);
+    SetVoiceRecording(&recorder, true);
+    assert((calls == std::vector<int>{1, 20, 1, 10}));
+    calls.clear();
+    G.voiceSetIsRecording.available = false;
+    SetVoiceRecording(&recorder, false);
+    SetVoiceRecording(&recorder, true);
+    assert((calls == std::vector<int>{3, 2}));
+}
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            cpp = pathlib.Path(directory) / "recording_test.cpp"
+            exe = pathlib.Path(directory) / "recording_test"
+            cpp.write_text(program)
+            subprocess.run([compiler, "-std=c++20", "-Wall", "-Wextra", "-Werror", str(cpp), "-o", str(exe)], check=True)
+            subprocess.run([str(exe)], check=True)
+        self.assertIn('voice unavailable: %s', source)
+        self.assertIn('ReadRecorderValue(G.voiceGetTransmitEnabled, G.voiceTransmitField, recorder)', source)
+        self.assertNotIn('set_TransmitEnabled', source)
 
     def test_staged_playback_handoff(self):
         source = SOURCE.read_text()

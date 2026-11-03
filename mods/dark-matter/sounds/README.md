@@ -38,7 +38,7 @@ build/test-venv/bin/pip install lameenc==1.9.0
 build/test-venv/bin/python mods/dark-matter/tests/test_soundboard.py
 ```
 
-All nine tests passed in the development sandbox, including runtime-call argument marshalling, GC-handle replacement, exact audio overload selection, recorder ordering, and startup retry guards. They do not run Unity or Photon Voice. Android compilation requires the NDK; room audio and microphone restoration must be tested on a headset with another consenting listener.
+All ten tests passed in the development sandbox, including runtime-call argument marshalling, GC-handle replacement, exact audio overload selection, recorder ordering, and startup retry guards. They do not run Unity or Photon Voice. Android compilation requires the NDK; room audio and microphone restoration must be tested on a headset with another consenting listener.
 
 ## Playback crash diagnostics
 
@@ -93,3 +93,13 @@ The reported timing is after the final PCM upload. Fix 7 removes soundboard Game
 Upload completion, source setup, local playback and voice routing now occur on separate update frames. A pending start is treated as busy, Stop cancels it, and playback cooldowns begin at playback rather than upload completion. Normal filename buttons still request room playback; the local test tone still bypasses voice.
 
 Checkpoints now report `source stage`, `local start stage`, and `voice stage`. Please report whether **Test Tone (Local)** crashes too, and provide the last `dark-matter sound:` lines if it does. The exact native crash cause has not been confirmed without headset logs. Host tests check source ownership and handoff structure; compilation alone does not establish that headset playback is fixed.
+
+## Voice Compatibility Fix 8: checkpoint findings
+
+The supplied previous-run checkpoint (revision 6) ends during AudioSource component creation. The current-run checkpoint identifies revision 7 and records completed local starts for MP3, WAV and the built-in tone, followed by further menu interactions. Its repeated `local=1 voice=0` entries show that voice routing is not starting. They do not establish audible output or delivery to another player, and neither checkpoint contains a native backtrace.
+
+For file playback, `voice stage requested=1` is followed by `voice=0` without recorder-discovery markers, locating the rejection in the compatibility preflight. The old preflight reports only a generic UI notification, so the supplied log does not identify which required binding is absent.
+
+Fix 8 logs every unavailable required binding. It accepts the public `IsRecording` property setter as an alternative to separate StartRecording/StopRecording metadata. Saved source/clip/loop state and transmit/recording checks can use known Recorder state fields when public getter invocation is unavailable. Fields are read only; configuration remains through public setters. The microphone's source, clip and loop settings are preserved and restored. Playback still requires voice chat already recording and unmuted; it does not force transmit or bypass other players' mute or distance settings.
+
+The new host test exercises both recording-control variants. Actual voice delivery still needs an on-device test with another listener. If the new checkpoint reports `voice unavailable: ...`, send those specific lines rather than the entire log. Full checkpoints can contain account-related URLs and should not be posted publicly. No uploaded checkpoints are included in the repository.

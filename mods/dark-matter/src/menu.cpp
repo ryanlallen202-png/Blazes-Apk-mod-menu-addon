@@ -37,7 +37,7 @@ using namespace BNM::Structures::Unity;
 using BNM::IL2CPP::Il2CppObject;
 
 YEEPS_MOD("DARK MATTER")
-#define DM_VERSION "Playback Handoff Fix 7"
+#define DM_VERSION "Voice Compatibility Fix 8"
 
 // ---- small helpers ---------------------------------------------------------
 
@@ -157,7 +157,10 @@ static struct {
     Method<int> voiceGetSourceType;
     Method<bool> voiceGetTransmitEnabled, voiceGetIsRecording, voiceGetLoopAudioClip;
     Method<void> voiceSetSourceType, voiceSetAudioClip, voiceSetLoopAudioClip,
-                 voiceStartRecording, voiceStopRecording;
+                 voiceStartRecording, voiceStopRecording, voiceSetIsRecording;
+    Field<int> voiceSourceTypeField;
+    Field<Il2CppObject *> voiceClipField;
+    Field<bool> voiceLoopField, voiceTransmitField, voiceRecordingField;
     Method<void> asSetClip, asSetVolume, asSetSpatial, asSetLoop, asPlay, asStop;
     Method<bool> asIsPlaying;
     BNM::MonoType *tAudioSource = nullptr;
@@ -254,6 +257,14 @@ static bool Lookups() {
             G.voiceSetLoopAudioClip = recorder.GetMethod("set_LoopAudioClip", 1);
             G.voiceStartRecording = Overload(recorder, "StartRecording", {});
             G.voiceStopRecording = Overload(recorder, "StopRecording", {});
+            G.voiceSetIsRecording = Overload(recorder, "set_IsRecording", {"System.Boolean"});
+            G.voiceSourceTypeField = recorder.GetField("sourceType");
+            G.voiceClipField = recorder.GetField("audioClip");
+            G.voiceLoopField = recorder.GetField("loopAudioClip");
+            G.voiceTransmitField = recorder.GetField("transmitEnabled");
+            G.voiceRecordingField = recorder.GetField("isRecording");
+            ym::log("dark-matter voice bindings: start=%d stop=%d recordingSetter=%d", G.voiceStartRecording.IsValid(), G.voiceStopRecording.IsValid(), G.voiceSetIsRecording.IsValid());
+            ym::log("dark-matter voice getters: transmit=%d recording=%d source=%d clip=%d loop=%d", G.voiceGetTransmitEnabled.IsValid(), G.voiceGetIsRecording.IsValid(), G.voiceGetSourceType.IsValid(), G.voiceGetAudioClip.IsValid(), G.voiceGetLoopAudioClip.IsValid());
         }
         ym::log("dark-matter: voice sound input manager=%d recorder=%d", G.voiceConnection.IsValid(),
                 G.voiceSetSourceType.IsValid() && G.voiceSetAudioClip.IsValid());
@@ -1921,17 +1932,38 @@ static Il2CppObject *FindVoiceRecorder() {
     }
     return nullptr;
 }
+static bool AudioCallable(const MethodBase &method) {
+    const auto *info = method.IsValid() ? method.GetInfo() : nullptr;
+    return p_audioInvoke && p_audioUnbox && info && info->methodPointer && info->invoker_method;
+}
+template<class T>
+static T ReadRecorderValue(const Method<T> &getter, Field<T> field, Il2CppObject *recorder) {
+    if (AudioCallable(getter)) return AudioCall<T>(getter, recorder);
+    // Only read known state fields. Configuration always goes through public setters.
+    if (field.IsValid()) return field[recorder]();
+    throw std::runtime_error("recorder state accessor unavailable");
+}
+static void SetVoiceRecording(Il2CppObject *recorder, bool recording) {
+    if (AudioCallable(G.voiceSetIsRecording)) {
+        AudioCall<void>(G.voiceSetIsRecording, recorder, recording);
+    } else if (recording) {
+        AudioCall<void>(G.voiceStartRecording, recorder);
+    } else {
+        AudioCall<void>(G.voiceStopRecording, recorder);
+    }
+}
+
 static void RestoreVoiceInput() {
     if (!g_voiceOverrideActive) return;
     g_voiceOverrideActive = false;
     Il2CppObject *recorder = g_voiceRecorder.get();
     if (Alive(recorder)) {
         try {
-            AudioCall<void>(G.voiceStopRecording, recorder);
+            SetVoiceRecording(recorder, false);
             AudioCall<void>(G.voiceSetAudioClip, recorder, g_voicePreviousClip.get());
             AudioCall<void>(G.voiceSetLoopAudioClip, recorder, g_voicePreviousLoop);
             AudioCall<void>(G.voiceSetSourceType, recorder, g_voicePreviousSourceType);
-            if (g_voiceWasRecording) AudioCall<void>(G.voiceStartRecording, recorder);
+            if (g_voiceWasRecording) SetVoiceRecording(recorder, true);
         } catch (...) { ym::log("dark-matter: could not restore voice input"); }
     }
     g_voiceRecorder.clear();
@@ -1940,35 +1972,53 @@ static void RestoreVoiceInput() {
     g_voiceRestoreAt = 0;
 }
 static bool StartVoicePlayback(Il2CppObject *clip, double duration) {
-    if (!Alive(clip) || !G.voiceGetTransmitEnabled.IsValid() || !G.voiceGetIsRecording.IsValid() ||
-        !G.voiceGetSourceType.IsValid() || !G.voiceGetAudioClip.IsValid() || !G.voiceGetLoopAudioClip.IsValid() ||
-        !G.voiceSetAudioClip.IsValid() || !G.voiceSetSourceType.IsValid() || !G.voiceSetLoopAudioClip.IsValid() ||
-        !G.voiceStopRecording.IsValid() || !G.voiceStartRecording.IsValid()) {
-        Notify("Voice chat audio input is unavailable");
-        return false;
+    if (!Alive(clip)) return false;
+    const bool recordingControl = AudioCallable(G.voiceSetIsRecording) ||
+        (AudioCallable(G.voiceStopRecording) && AudioCallable(G.voiceStartRecording));
+    const struct { const char *name; bool available; } required[] = {
+        {"TransmitEnabled", AudioCallable(G.voiceGetTransmitEnabled) || G.voiceTransmitField.IsValid()},
+        {"IsRecording", AudioCallable(G.voiceGetIsRecording) || G.voiceRecordingField.IsValid()},
+        {"SourceType", AudioCallable(G.voiceGetSourceType) || G.voiceSourceTypeField.IsValid()},
+        {"AudioClip", AudioCallable(G.voiceGetAudioClip) || G.voiceClipField.IsValid()},
+        {"LoopAudioClip", AudioCallable(G.voiceGetLoopAudioClip) || G.voiceLoopField.IsValid()},
+        {"set_AudioClip", AudioCallable(G.voiceSetAudioClip)},
+        {"set_SourceType", AudioCallable(G.voiceSetSourceType)},
+        {"set_LoopAudioClip", AudioCallable(G.voiceSetLoopAudioClip)},
+        {"recording control (property or start/stop)", recordingControl},
+    };
+    bool ready = true;
+    for (const auto &capability : required) if (!capability.available) {
+        ym::log("dark-matter sound: voice unavailable: %s", capability.name);
+        ready = false;
     }
+    if (!ready) { Notify("Voice input unavailable; see checkpoint log"); return false; }
     ym::log("dark-matter sound: locating voice recorder");
     Il2CppObject *recorder = FindVoiceRecorder();
     if (!Alive(recorder)) { Notify("Voice chat recorder not found"); return false; }
-    if (!AudioCall<bool>(G.voiceGetTransmitEnabled, recorder)) { Notify("Unmute voice chat to play for the room"); return false; }
-    if (!AudioCall<bool>(G.voiceGetIsRecording, recorder)) { Notify("Voice chat is not recording"); return false; }
+    if (!ReadRecorderValue(G.voiceGetTransmitEnabled, G.voiceTransmitField, recorder)) { Notify("Unmute voice chat to play for the room"); return false; }
+    if (!ReadRecorderValue(G.voiceGetIsRecording, G.voiceRecordingField, recorder)) { Notify("Voice chat is not recording"); return false; }
     g_voiceRecorder.set(recorder);
-    g_voicePreviousSourceType = AudioCall<int>(G.voiceGetSourceType, recorder);
-    g_voicePreviousClip.set(AudioCall<Il2CppObject *>(G.voiceGetAudioClip, recorder));
-    g_voicePreviousLoop = AudioCall<bool>(G.voiceGetLoopAudioClip, recorder);
+    g_voicePreviousSourceType = ReadRecorderValue(G.voiceGetSourceType, G.voiceSourceTypeField, recorder);
+    g_voicePreviousClip.set(ReadRecorderValue(G.voiceGetAudioClip, G.voiceClipField, recorder));
+    g_voicePreviousLoop = ReadRecorderValue(G.voiceGetLoopAudioClip, G.voiceLoopField, recorder);
     g_voiceWasRecording = true;
     g_voiceOverrideActive = true;
     try {
         ym::log("dark-matter sound: stopping recorder before clip input");
-        AudioCall<void>(G.voiceStopRecording, recorder);
+        SetVoiceRecording(recorder, false);
         AudioCall<void>(G.voiceSetAudioClip, recorder, clip);
         AudioCall<void>(G.voiceSetLoopAudioClip, recorder, false);
         AudioCall<void>(G.voiceSetSourceType, recorder, 1); // Recorder.InputSourceType.AudioClip
         ym::log("dark-matter sound: starting clip recorder");
-        AudioCall<void>(G.voiceStartRecording, recorder);
+        SetVoiceRecording(recorder, true);
     } catch (...) {
         RestoreVoiceInput();
         Notify("Could not route sound through voice chat");
+        return false;
+    }
+    if (!ReadRecorderValue(G.voiceGetIsRecording, G.voiceRecordingField, recorder)) {
+        RestoreVoiceInput();
+        ym::log("dark-matter sound: recorder did not start for clip input");
         return false;
     }
     g_voiceRestoreAt = g_time + (duration > 0.0 ? duration : 0.05);
