@@ -1902,7 +1902,7 @@ static void ScanSounds() {
     for (size_t i = 0; i < g_soundFiles.size(); ++i) {
         const std::string &path = g_soundFiles[i];
         size_t slash = path.find_last_of('/');
-        g_soundLabels.push_back(slash == std::string::npos ? path : path.substr(slash + 1));
+        g_soundLabels.push_back(std::string("[PLAY] ") + (slash == std::string::npos ? path : path.substr(slash + 1)));
         g_soundItems.push_back(Item{SOUND, g_soundLabels.back().c_str(), ACTION, MAIN, nullptr, nullptr, (int)i});
     }
     g_page = 0;
@@ -2002,19 +2002,12 @@ static void PlaySound() {
     while (g_soundFramesQueued < prebuffer)
         if (!FeedSoundChunk()) { StopSound(); Notify("Could not buffer sound"); return; }
 
+    // Soundboard buttons are microphone-only: never play a clip locally as a fallback.
     bool remote = BeginVoicePlayback(clip);
     if (!remote) {
-        if (!Alive(g_soundSource.get())) {
-            Il2CppObject *go = Class("UnityEngine", "GameObject").CreateNewObjectParameters(CreateMonoString("DARK MATTER Soundboard"));
-            Il2CppObject *source = go ? G.goAddComponent[go](G.tAudioSource) : nullptr;
-            if (!source) { if (go) G.destroy(go); StopSound(); Notify("No Photon recorder; local playback unavailable"); return; }
-            g_soundSource.set(source);
-            if (g_head.get()) G.trSetParent[Tr(go)](Tr(g_head.get()), false);
-            G.audioSourceSetSpatialBlend[source](0.0f);
-        }
-        G.audioSourceSetVolume[g_soundSource.get()](1.0f);
-        G.audioSourceSetClip[g_soundSource.get()](clip);
-        G.audioSourcePlay[g_soundSource.get()]();
+        StopSound();
+        Notify("Microphone not ready; enable voice chat and try again");
+        return;
     }
     g_soundActive = true;
     g_soundStarted = g_time;
