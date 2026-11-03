@@ -42,7 +42,7 @@ All eight tests passed in the development sandbox, including runtime-call argume
 
 ## Playback crash diagnostics
 
-The **Audio Runtime Fix 4** build retains exact overload selection and uses `il2cpp_runtime_invoke` for clip creation, PCM uploads, AudioSource playback, and voice-recorder configuration. Managed exceptions are checked rather than escaping from those calls. It uses the documented 32-bit GC-handle ABI and roots replacement objects and upload arrays before runtime calls. A managed voice-routing failure preserves local playback where possible. These address concrete playback risks; the reported headset crash cannot be confirmed resolved without an on-device retest.
+The **Unity 6 Handle Fix 5** build retains exact overload selection and uses `il2cpp_runtime_invoke` for clip creation, PCM uploads, AudioSource playback, and voice-recorder configuration. Managed exceptions are checked rather than escaping from those calls. It uses the SDK's pointer-sized `Il2CppGCHandle` ABI for Unity 6 and roots replacement objects and upload arrays before runtime calls. A managed voice-routing failure preserves local playback where possible. These address concrete playback risks; the reported headset crash cannot be confirmed resolved without an on-device retest.
 
 ## Menu missing after restart
 
@@ -69,3 +69,9 @@ Headset checklist:
 - Smoke-test every other menu page on-device: navigation and hand switching; movement toggles individually and after disabling; rig/emote tracker restoration; item queues and cooldowns; effects cleanup; Overpowered toggles and reset; Enabled Mods and Turn Everything Off.
 
 No headset/runtime verification is implied by the host tests.
+
+## Startup crash regression (Fix 5)
+
+Fix 4 incorrectly declared GC handles as `uint32_t`. The SDK's Unity 2023+/Unity 6 headers define `Il2CppGCHandle` as `void *`; returning or passing it as 32 bits can truncate it on arm64. Fix 5 uses that SDK type for storage and all three GC-handle functions. The host regression round-trips a handle above `UINT32_MAX`, including replacement and release. No SDK or loader crash protection has been changed.
+
+If the previous build crashes on entry, remove its `.so` from the headset's mods folder before launching again. Install only the new `dark-matter.so`, not all libraries from the artifact. Keep other mods removed temporarily when isolating a load crash. A successful Actions build confirms compilation, not on-device recovery; send the loader's final checkpoint lines if startup still fails.

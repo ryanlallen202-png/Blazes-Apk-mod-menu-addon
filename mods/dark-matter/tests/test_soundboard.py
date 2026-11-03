@@ -113,29 +113,34 @@ int main() {
         if not compiler:
             self.skipTest("A host C++ compiler is required")
         source = SOURCE.read_text()
-        helper = source[source.index("static uint32_t (*p_handleNew)"):source.index("// Audio calls use")]
+        helper = source[source.index("using GcHandle ="):source.index("// Audio calls use")]
         program = '''#include <cstdint>
 #include <cassert>
 #include <map>
+namespace BNM::IL2CPP { using Il2CppGCHandle = void *; }
 struct Il2CppObject {};
 '''+helper+'''
-static std::map<uint32_t, Il2CppObject *> handles;
-static uint32_t nextHandle = 1;
+static std::map<GcHandle, Il2CppObject *> handles;
+// Exercise the bits a 32-bit handle would lose on the arm64 target.
+static uintptr_t nextHandle = (uintptr_t{1} << 40) | 0x1234;
+static_assert(sizeof(GcHandle) == sizeof(void *));
 static bool replacing = false;
-static uint32_t New(Il2CppObject *object, bool pinned) {
+static GcHandle New(Il2CppObject *object, bool pinned) {
     assert(!pinned);
     if (replacing) assert(!handles.empty());
-    auto handle = nextHandle++;
+    auto handle = reinterpret_cast<GcHandle>(nextHandle++);
     handles[handle] = object;
     return handle;
 }
-static Il2CppObject *Target(uint32_t handle) { return handles.at(handle); }
-static void Free(uint32_t handle) { assert(handles.erase(handle) == 1); }
+static Il2CppObject *Target(GcHandle handle) { return handles.at(handle); }
+static void Free(GcHandle handle) { assert(handles.erase(handle) == 1); }
 int main() {
     p_handleNew = New; p_handleTarget = Target; p_handleFree = Free;
     Il2CppObject object;
     Ref ref;
     ref.set(&object);
+    assert(reinterpret_cast<uintptr_t>(ref.h) > UINT32_MAX);
+    assert(ref.get() == &object);
     replacing = true;
     ref.set(ref.get());
     assert(ref.get() == &object && handles.size() == 1);
@@ -160,7 +165,8 @@ int main() {
         self.assertIn("if (!Alive(g_head.get())) g_head.set", update)
         self.assertIn("if (!g_built) return;", update)
         self.assertIn("ym::onRoomChange(OnRoomChange)", source)
-        self.assertIn("static uint32_t (*p_handleNew)(Il2CppObject *, bool)", source)
+        self.assertIn("using GcHandle = BNM::IL2CPP::Il2CppGCHandle;", source)
+        self.assertNotIn("static uint32_t (*p_handleNew)", source)
 
     def test_menu_syntax(self):
         """Parse the full translation unit; platform declarations are host-only shims."""

@@ -37,7 +37,7 @@ using namespace BNM::Structures::Unity;
 using BNM::IL2CPP::Il2CppObject;
 
 YEEPS_MOD("DARK MATTER")
-#define DM_VERSION "Audio Runtime Fix 4"
+#define DM_VERSION "Unity 6 Handle Fix 5"
 
 // ---- small helpers ---------------------------------------------------------
 
@@ -61,19 +61,21 @@ static MethodBase Overload(Class c, const char *name, std::vector<std::string> t
 
 // Unity objects we keep between frames must be held by a GC handle, or the
 // garbage collector can free them under us.
-static uint32_t (*p_handleNew)(Il2CppObject *, bool);
-static Il2CppObject *(*p_handleTarget)(uint32_t);
-static void (*p_handleFree)(uint32_t);
+// Unity 2023+/Unity 6 uses pointer-sized GC handles, not the old uint32_t ABI.
+using GcHandle = BNM::IL2CPP::Il2CppGCHandle;
+static GcHandle (*p_handleNew)(Il2CppObject *, bool);
+static Il2CppObject *(*p_handleTarget)(GcHandle);
+static void (*p_handleFree)(GcHandle);
 struct Ref {
-    uint32_t h = 0;
+    GcHandle h = nullptr;
     void set(Il2CppObject *o) {
         // Root the replacement before releasing the old handle, including set(get()).
-        uint32_t next = o && p_handleNew ? p_handleNew(o, false) : 0;
+        GcHandle next = o && p_handleNew ? p_handleNew(o, false) : nullptr;
         clear();
         h = next;
     }
     Il2CppObject *get() const { return h && p_handleTarget ? (Il2CppObject *)p_handleTarget(h) : nullptr; }
-    void clear() { if (h && p_handleFree) p_handleFree(h); h = 0; }
+    void clear() { if (h && p_handleFree) p_handleFree(h); h = nullptr; }
 };
 
 
