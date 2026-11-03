@@ -8,7 +8,13 @@
 // Movement only changes your own game. Rig mods (dances) and Items are seen by the room,
 // within the limits in AGENTS.md ("Things others see"). Read docs/GUIDE.md before adding.
 #include "ymsdk.hpp"
+#include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <cctype>
+#include <dirent.h>
+#include <fstream>
+#include <sys/stat.h>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -102,6 +108,10 @@ static struct {
     Method<int> goGetLayer;
     Method<bool> colliderIsTrigger, behaviourGetEnabledCollider;
     Method<void> ignoreLayers;            // a LayerMask: which layers your hands can climb on
+    Method<Il2CppObject *> audioClipCreate, applicationPersistentPath;
+    Method<bool> audioClipSetData;
+    Method<void> audioSourceSetClip, audioSourcePlay, audioSourceStop, audioSourceSetVolume, audioSourceSetSpatialBlend;
+    BNM::MonoType *tAudioSource = nullptr;
     Method<void> goSetLayer;
     BNM::MonoType *tRigidbody = nullptr, *tCollider = nullptr, *tCanvas = nullptr, *tText = nullptr,
                   *tFont = nullptr, *tRenderer = nullptr, *tMeshCollider = nullptr, *tLine = nullptr;
@@ -118,12 +128,23 @@ static bool Lookups() {
           rb("UnityEngine", "Rigidbody"), mat("UnityEngine", "Material"), rend("UnityEngine", "Renderer"),
           sh("UnityEngine", "Shader"), res("UnityEngine", "Resources"), text("UnityEngine.UI", "Text"),
           graphic("UnityEngine.UI", "Graphic"), canvas("UnityEngine", "Canvas"), rt("UnityEngine", "RectTransform"),
-          dev("UnityEngine.XR", "InputDevices"), player("", "MasterPlayer", Image("Assembly-CSharp.dll"));
+          dev("UnityEngine.XR", "InputDevices"), player("", "MasterPlayer", Image("Assembly-CSharp.dll")),
+          audioClip("UnityEngine", "AudioClip"), audioSource("UnityEngine", "AudioSource"),
+          application("UnityEngine", "Application");
     if (!go || !tr || !player || !dev) { ym::log("dark-matter: game classes missing"); return false; }
     G.createPrimitive = go.GetMethod("CreatePrimitive", 1);
     G.goTransform = go.GetMethod("get_transform", 0);
     G.goGetComponent = Overload(go, "GetComponent", {"System.Type"});
     G.goAddComponent = Overload(go, "AddComponent", {"System.Type"});
+    G.audioClipCreate = audioClip.GetMethod("Create", 5);
+    G.audioClipSetData = audioClip.GetMethod("SetData", 2);
+    G.audioSourceSetClip = audioSource.GetMethod("set_clip", 1);
+    G.audioSourcePlay = audioSource.GetMethod("Play", 0);
+    G.audioSourceStop = audioSource.GetMethod("Stop", 0);
+    G.audioSourceSetVolume = audioSource.GetMethod("set_volume", 1);
+    G.audioSourceSetSpatialBlend = audioSource.GetMethod("set_spatialBlend", 1);
+    G.tAudioSource = audioSource.GetMonoType();
+    G.applicationPersistentPath = application.GetMethod("get_persistentDataPath", 0);
     G.goSetActive = go.GetMethod("SetActive", 1);
     Class comp("UnityEngine", "Component");
     G.compTransform = comp.GetMethod("get_transform", 0);
@@ -326,11 +347,18 @@ static std::vector<PendingItem> g_itemQueue;
 static double g_nextItem = 0, g_nextBatch = 0;
 static int g_dupeArmed = 0;
 
-static constexpr int kDances = 8;
+static constexpr int kDances = 16;
 static bool g_danceSel[kDances];
 static int g_dance = -1;            // the picked dance, -1 = none
 static bool f_fly, f_fastFly, f_platforms, f_lowGravity, f_rainbow, f_fps, f_clock, f_rightHand,
             f_notify = true;
+static bool f_superSpeed, f_superFly, f_rocketBoots, f_dash, f_grapple, f_groundPound;
+static bool f_rain, f_snow;
+static Ref g_soundSource, g_soundClip;
+static std::vector<std::string> g_soundFiles;
+static std::string g_soundDirectory;
+static size_t g_soundIndex = 0;
+static float g_soundVolume = 0.75f;
 static Ref g_player, g_rigidbody, g_leftHand, g_rightHand, g_head;
 static Vector3 g_spot;
 static bool g_haveSpot = false;
@@ -350,9 +378,16 @@ static void DancePicked();
 static void ArmDupe9();
 static void ArmDupe27();
 static bool LeftHandItem();
+static void ScanSounds();
+static void PlaySound();
+static void StopSound();
+static void PreviousSound();
+static void NextSound();
+static void SoundVolumeUp();
+static void SoundVolumeDown();
 
-enum Cat { MAIN, MOVEMENT, RIG, ITEMS, SETTINGS, ENABLED, NCAT };
-static const char *kCatName[NCAT] = {"Main", "Movement Mods", "Rig Mods", "Items", "Settings", "Enabled Mods"};
+enum Cat { MAIN, MOVEMENT, RIG, ITEMS, SETTINGS, EFFECTS, SOUND, ENABLED, NCAT };
+static const char *kCatName[NCAT] = {"Main", "Movement Mods", "Rig Mods", "Items", "Settings", "Effects", "Soundboard", "Enabled Mods"};
 enum Kind { OPEN, TOGGLE, ACTION };
 struct Item {
     Cat cat;
@@ -368,6 +403,8 @@ static Item g_items[] = {
     {MAIN, "Movement Mods", OPEN, MOVEMENT},
     {MAIN, "Rig Mods", OPEN, RIG},
     {MAIN, "Items", OPEN, ITEMS},
+    {MAIN, "Effects", OPEN, EFFECTS},
+    {MAIN, "Soundboard", OPEN, SOUND},
     {MAIN, "Enabled Mods", OPEN, ENABLED},
 
     {MOVEMENT, "Exit Movement Mods", OPEN, MAIN},
@@ -384,7 +421,12 @@ static Item g_items[] = {
     {MOVEMENT, "Low Gravity", TOGGLE, MAIN, &f_lowGravity},
     {MOVEMENT, "Save Spot", ACTION, MAIN, nullptr, SaveSpot},
     {MOVEMENT, "Go To Spot", ACTION, MAIN, nullptr, GoToSpot},
-
+    {MOVEMENT, "Super Speed", TOGGLE, MAIN, &f_superSpeed},
+    {MOVEMENT, "Super Fly", TOGGLE, MAIN, &f_superFly},
+    {MOVEMENT, "Rocket Boots", TOGGLE, MAIN, &f_rocketBoots},
+    {MOVEMENT, "Dash", TOGGLE, MAIN, &f_dash},
+    {MOVEMENT, "Grapple Hook", TOGGLE, MAIN, &f_grapple},
+    {MOVEMENT, "Ground Pound", TOGGLE, MAIN, &f_groundPound},
 
     {RIG, "Exit Rig Mods", OPEN, MAIN},
     {RIG, "Wave", TOGGLE, MAIN, &g_danceSel[0], DancePicked},
@@ -395,6 +437,14 @@ static Item g_items[] = {
     {RIG, "Jumping Jacks", TOGGLE, MAIN, &g_danceSel[5], DancePicked},
     {RIG, "Spaz", TOGGLE, MAIN, &g_danceSel[6], DancePicked},
     {RIG, "Beyblade", TOGGLE, MAIN, &g_danceSel[7], DancePicked},
+    {RIG, "Floss", TOGGLE, MAIN, &g_danceSel[8], DancePicked},
+    {RIG, "Dab", TOGGLE, MAIN, &g_danceSel[9], DancePicked},
+    {RIG, "Clap", TOGGLE, MAIN, &g_danceSel[10], DancePicked},
+    {RIG, "Chicken Wings", TOGGLE, MAIN, &g_danceSel[11], DancePicked},
+    {RIG, "Robot", TOGGLE, MAIN, &g_danceSel[12], DancePicked},
+    {RIG, "Salute", TOGGLE, MAIN, &g_danceSel[13], DancePicked},
+    {RIG, "Cheer", TOGGLE, MAIN, &g_danceSel[14], DancePicked},
+    {RIG, "Hype", TOGGLE, MAIN, &g_danceSel[15], DancePicked},
 
     {ITEMS, "Exit Items", OPEN, MAIN},
     {ITEMS, "Spawn Item Gun", TOGGLE, MAIN, &f_itemGun},
@@ -413,6 +463,19 @@ static Item g_items[] = {
     {SETTINGS, "Show Clock", TOGGLE, MAIN, &f_clock},
     {SETTINGS, "Notifications", TOGGLE, MAIN, &f_notify},
     {SETTINGS, "Turn Everything Off", ACTION, MAIN, nullptr, AllOff},
+
+    {EFFECTS, "Exit Effects", OPEN, MAIN},
+    {EFFECTS, "Rain", TOGGLE, MAIN, &f_rain},
+    {EFFECTS, "Snow", TOGGLE, MAIN, &f_snow},
+
+    {SOUND, "Exit Soundboard", OPEN, MAIN},
+    {SOUND, "Scan Sounds Folder", ACTION, MAIN, nullptr, ScanSounds},
+    {SOUND, "Previous Sound", ACTION, MAIN, nullptr, PreviousSound},
+    {SOUND, "Next Sound", ACTION, MAIN, nullptr, NextSound},
+    {SOUND, "Play Sound", ACTION, MAIN, nullptr, PlaySound},
+    {SOUND, "Stop Sound", ACTION, MAIN, nullptr, StopSound},
+    {SOUND, "Volume Up", ACTION, MAIN, nullptr, SoundVolumeUp},
+    {SOUND, "Volume Down", ACTION, MAIN, nullptr, SoundVolumeDown},
 };
 static constexpr int kItems = sizeof(g_items) / sizeof(g_items[0]);
 static Item g_returnItem = {ENABLED, "Exit Enabled Mods", OPEN, MAIN};
@@ -436,7 +499,31 @@ static const struct { const char *label, *tip; } kTips[] = {
     {"Low Gravity", "Jump higher, fall slower."},
     {"Save Spot", "Remembers where you are."},
     {"Go To Spot", "Teleports you to your saved spot."},
-    {"Change Menu Theme", "Blaze, Orange, Blue, Green, Purple, Dark."},
+    {"Super Speed", "Hold A to move quickly in the direction you face."},
+    {"Super Fly", "Hold A to fly freely in the direction you look."},
+    {"Rocket Boots", "Hold both triggers to thrust upward."},
+    {"Dash", "Press X for a short forward burst."},
+    {"Grapple Hook", "Hold left grip and right trigger to pull toward a surface."},
+    {"Ground Pound", "Press B to drop quickly."},
+    {"Floss", "Hold left trigger to floss."},
+    {"Dab", "Hold left trigger to dab."},
+    {"Clap", "Hold left trigger to clap."},
+    {"Chicken Wings", "Hold left trigger to flap your arms."},
+    {"Robot", "Hold left trigger for robotic arm movements."},
+    {"Salute", "Hold left trigger to salute."},
+    {"Cheer", "Hold left trigger to cheer."},
+    {"Hype", "Hold left trigger for a hype dance."},
+    {"Rain", "Local rain effect; only you see it."},
+    {"Snow", "Local snow effect; only you see it."},
+    {"Soundboard", "Play local WAV clips from your sounds folder."},
+    {"Scan Sounds Folder", "Find WAV files in the DARK MATTER sounds folder."},
+    {"Previous Sound", "Select the previous WAV clip."},
+    {"Next Sound", "Select the next WAV clip."},
+    {"Play Sound", "Play the selected WAV locally through your headset."},
+    {"Stop Sound", "Stop local sound playback."},
+    {"Volume Up", "Raise local soundboard volume."},
+    {"Volume Down", "Lower local soundboard volume."},
+    {"Change Menu Theme", "VOID, NEBULA or ECLIPSE."},
     {"Rainbow Menu", "The menu cycles through colors."},
     {"Show FPS", "Frames per second in the title."},
     {"Show Clock", "The time in the title."},
@@ -1213,10 +1300,18 @@ static void DanceTick(const Buttons &in, float dt) {
         R = shoulder + f * 0.35f + r * 0.2f + Vector3(Rand01() - 0.5f, Rand01() - 0.5f, Rand01() - 0.5f) * 0.3f;
         L = shoulder + f * 0.35f - r * 0.2f + Vector3(Rand01() - 0.5f, Rand01() - 0.5f, Rand01() - 0.5f) * 0.3f;
         break;
-    default:  // Beyblade: hands spin fast around your waist
+    case 7:  // Beyblade: hands spin fast around your waist
         R = shoulder - up * 0.3f + r * (0.5f * cosf(t * 20)) + f * (0.5f * sinf(t * 20));
         L = shoulder - up * 0.3f - r * (0.5f * cosf(t * 20)) - f * (0.5f * sinf(t * 20));
         break;
+    case 8: { float p = t * 8.0f; R = shoulder + r * (0.25f + 0.35f * sinf(p)) - up * 0.2f - f * 0.15f; L = shoulder - r * (0.25f + 0.35f * sinf(p + 3.14159f)) - up * 0.2f - f * 0.15f; break; }
+    case 9: R = shoulder + r * 0.48f + up * 0.48f + f * 0.1f; L = shoulder - r * 0.2f + up * 0.18f + f * 0.42f; break;
+    case 10: { float p = 0.16f + 0.12f * fabsf(sinf(t * 7.0f)); R = shoulder + f * 0.38f - r * p + up * 0.05f; L = shoulder + f * 0.38f + r * p + up * 0.05f; break; }
+    case 11: { float p = 0.22f + 0.12f * sinf(t * 9.0f); R = shoulder + r * 0.34f - up * p + f * 0.1f; L = shoulder - r * 0.34f - up * p + f * 0.1f; break; }
+    case 12: { float p = sinf(t * 3.0f) > 0 ? 0.42f : -0.12f; R = shoulder + r * 0.42f + up * p + f * 0.12f; L = shoulder - r * 0.42f - up * p + f * 0.12f; break; }
+    case 13: R = shoulder + r * 0.1f + up * 0.42f + f * 0.32f; L = shoulder - r * 0.42f - up * 0.12f; break;
+    case 14: { float p = 0.42f + 0.08f * sinf(t * 8.0f); R = shoulder + r * 0.38f + up * p; L = shoulder - r * 0.38f + up * p; break; }
+    default: { float p = sinf(t * 8.0f); R = shoulder + r * 0.28f + up * (0.42f + 0.16f * p); L = shoulder - r * 0.28f + up * (0.42f - 0.16f * p); break; }
     }
     // Keep each hand within arm's reach of its shoulder, then glide there instead of
     // jumping, so the arms move smoothly for you and for everyone watching.
@@ -1388,6 +1483,32 @@ static void SpawnOnHandTick(const Buttons &in) {
     g_itemQueue.push_back({G.trGetPosition[hand]() + G.trGetForward[hand]() * 0.1f, Vector3(0, 0, 0)});
 }
 
+// ---- local weather ------------------------------------------------------------
+// Bounded local-only particles: no RPCs and no per-frame object allocation.
+static Ref g_weather[20];
+static int g_weatherMode = 0;
+static void WeatherTick(float dt) {
+    int mode = f_rain ? 1 : (f_snow ? 2 : 0);
+    if (mode != g_weatherMode) { for (auto &p : g_weather) Kill(p); g_weatherMode = mode; }
+    if (!mode) return;
+    Il2CppObject *head = g_head.get(); if (!head) return;
+    Vector3 hp = G.trGetPosition[head]();
+    Color color = mode == 1 ? Color(0.38f, 0.72f, 1.0f, 1) : Color(0.88f, 0.94f, 1.0f, 1);
+    for (int i = 0; i < 20; i++) {
+        if (!Alive(g_weather[i].get())) {
+            Il2CppObject *p = Prim(mode == 1 ? 3 : 0, color, false); if (!p) continue;
+            G.trSetLocalScale[Tr(p)](mode == 1 ? Vector3(0.012f, 0.18f, 0.012f) : Vector3(0.045f, 0.045f, 0.045f));
+            g_weather[i].set(p);
+            G.trSetPosition[Tr(p)](hp + Vector3((Rand01() - 0.5f) * 5.0f, 1.0f + Rand01() * 3.0f, (Rand01() - 0.5f) * 5.0f));
+        } else {
+            Il2CppObject *p = g_weather[i].get(); Vector3 pos = G.trGetPosition[Tr(p)]();
+            pos.y -= (mode == 1 ? 10.0f : 1.6f) * dt;
+            if (pos.y < hp.y - 1.0f) pos = hp + Vector3((Rand01() - 0.5f) * 5.0f, 2.0f + Rand01() * 2.5f, (Rand01() - 0.5f) * 5.0f);
+            G.trSetPosition[Tr(p)](pos);
+        }
+    }
+}
+
 // ---- callbacks ---------------------------------------------------------------
 
 static void OnRoomChange() {
@@ -1395,6 +1516,8 @@ static void OnRoomChange() {
     for (int r = 0; r < kRows; r++) { g_rowCube[r].clear(); g_rowLabel[r].clear(); g_rowText[r].clear(); }
     for (Ref *r : {&g_board, &g_bg, &g_outline, &g_title, &g_titleBar, &g_prev, &g_next, &g_notifyText, &g_tipText}) r->clear();
     for (Ref *r : {&g_menu, &g_pointer, &g_notifyGo, &g_leftPlatform, &g_rightPlatform, &g_gunBall, &g_gunLineGo}) Kill(*r);
+    for (auto &p : g_weather) Kill(p);
+    g_weatherMode = 0;
     PauseTrackers(false);
     g_dancing = false;
     g_gunLine.clear();
@@ -1408,6 +1531,163 @@ static void OnRoomChange() {
     g_built = false; g_menuShown = false; g_touching = -2; g_haveSpot = false;
 }
 
+static bool g_dashWasDown = false, g_poundWasDown = false;
+static double g_nextDash = 0;
+static void MovementExtrasTick(const Buttons &in) {
+    Il2CppObject *head = g_head.get(), *hand = g_rightHand.get(); if (!head) return;
+    Vector3 v;
+    if (f_superSpeed && in.a && GetVel(v)) { Vector3 f = Flat(G.trGetForward[head]()); SetVel(Vector3(f.x * 15.0f, v.y, f.z * 15.0f)); }
+    if (f_superFly && in.a) SetVel(G.trGetForward[head]() * 22.0f);
+    if (f_rocketBoots && in.ltrig && in.rtrig && GetVel(v)) SetVel(Vector3(v.x, fmaxf(v.y, 14.0f), v.z));
+    bool dashPress = in.x && !g_dashWasDown, poundPress = in.b && !g_poundWasDown;
+    g_dashWasDown = in.x; g_poundWasDown = in.b;
+    if (f_dash && dashPress && g_time >= g_nextDash) { Vector3 f = Flat(G.trGetForward[head]()); SetVel(f * 18.0f + Vector3(0, 3.0f, 0)); g_nextDash = g_time + 0.65; }
+    if (f_groundPound && poundPress && !g_menuShown && GetVel(v)) SetVel(Vector3(v.x, -18.0f, v.z));
+    if (f_grapple && in.lgrip && in.rtrig && hand && G.raycast.IsValid()) {
+        Vector3 start = G.trGetPosition[hand](), dir = G.trGetForward[hand]();
+        BNM::Structures::Unity::RaycastHit hit{};
+        if (G.raycast(start, dir, &hit, 40.0f, -5)) { Vector3 d = hit.point - start; float len = sqrtf(d.x*d.x + d.y*d.y + d.z*d.z); if (len > 0.2f) SetVel(d * (16.0f / len)); }
+    }
+}
+
+
+// ---- local soundboard -------------------------------------------------------
+// This is local headset playback only. The repository forbids network activity;
+// it does not inject audio into the game's microphone or transmit clips to a lobby.
+struct WavInfo { int channels = 0, sampleRate = 0; size_t dataOffset = 0, dataBytes = 0; };
+static uint16_t Read16(const std::vector<uint8_t> &b, size_t p) {
+    return (uint16_t)b[p] | ((uint16_t)b[p + 1] << 8);
+}
+static uint32_t Read32(const std::vector<uint8_t> &b, size_t p) {
+    return (uint32_t)b[p] | ((uint32_t)b[p + 1] << 8) | ((uint32_t)b[p + 2] << 16) | ((uint32_t)b[p + 3] << 24);
+}
+static bool ParseWav(const std::vector<uint8_t> &b, WavInfo &w) {
+    if (b.size() < 44 || memcmp(b.data(), "RIFF", 4) || memcmp(b.data() + 8, "WAVE", 4)) return false;
+    bool fmt = false, data = false;
+    for (size_t p = 12; p + 8 <= b.size();) {
+        uint32_t n = Read32(b, p + 4);
+        size_t body = p + 8;
+        if (body + n > b.size()) return false;
+        if (!memcmp(b.data() + p, "fmt ", 4)) {
+            if (n < 16 || Read16(b, body) != 1 || Read16(b, body + 14) != 16) return false;
+            w.channels = Read16(b, body + 2);
+            w.sampleRate = (int)Read32(b, body + 4);
+            fmt = true;
+        } else if (!memcmp(b.data() + p, "data", 4)) {
+            w.dataOffset = body; w.dataBytes = n; data = true;
+        }
+        p = body + n + (n & 1);
+    }
+    return fmt && data && (w.channels == 1 || w.channels == 2) &&
+           w.sampleRate >= 8000 && w.sampleRate <= 48000 && w.dataBytes >= 2;
+}
+static std::string PersistentPath() {
+    if (!G.applicationPersistentPath.IsValid()) return "";
+    auto *v = (Il2CppObject *)G.applicationPersistentPath();
+    if (!v) return "";
+    struct ManagedString { void *klass; void *monitor; int32_t length; char16_t chars[1]; };
+    auto *m = (ManagedString *)v;
+    std::string out;
+    for (int i = 0; i < m->length; ++i) {
+        char16_t c = m->chars[i];
+        if (c > 0x7f) return "";
+        out.push_back((char)c);
+    }
+    return out;
+}
+static void ScanSounds() {
+    std::string base = PersistentPath();
+    if (base.empty()) { Notify("Soundboard path unavailable"); return; }
+    g_soundDirectory = base + "/sounds";
+    mkdir(g_soundDirectory.c_str(), 0775);
+    g_soundFiles.clear();
+    DIR *d = opendir(g_soundDirectory.c_str());
+    if (!d) { Notify("Could not open sounds folder"); return; }
+    while (dirent *e = readdir(d)) {
+        std::string n = e->d_name;
+        if (n.size() < 5) continue;
+        std::string ext = n.substr(n.size() - 4);
+        for (char &c : ext) c = (char)tolower((unsigned char)c);
+        if (ext == ".wav") g_soundFiles.push_back(g_soundDirectory + "/" + n);
+    }
+    closedir(d);
+    std::sort(g_soundFiles.begin(), g_soundFiles.end());
+    g_soundIndex = 0;
+    Notify("Found %d WAV files", (int)g_soundFiles.size());
+}
+static void StopSound() {
+    if (Alive(g_soundSource.get()) && G.audioSourceStop.IsValid()) G.audioSourceStop[g_soundSource.get()]();
+    if (Alive(g_soundSource.get()) && G.audioSourceSetClip.IsValid()) G.audioSourceSetClip[g_soundSource.get()](nullptr);
+    Kill(g_soundClip);
+}
+static void SelectSound(int direction) {
+    if (g_soundFiles.empty()) { Notify("No WAV files. Scan sounds folder first"); return; }
+    int n = (int)g_soundFiles.size();
+    g_soundIndex = (size_t)((((int)g_soundIndex + direction) % n + n) % n);
+    const std::string &p = g_soundFiles[g_soundIndex];
+    size_t slash = p.find_last_of('/');
+    Notify("Selected: %s", slash == std::string::npos ? p.c_str() : p.c_str() + slash + 1);
+}
+static void PreviousSound() { SelectSound(-1); }
+static void NextSound() { SelectSound(1); }
+static void SoundVolumeUp() {
+    g_soundVolume = fminf(1.0f, g_soundVolume + 0.1f);
+    if (Alive(g_soundSource.get())) G.audioSourceSetVolume[g_soundSource.get()](g_soundVolume);
+    Notify("Sound volume: %d%%", (int)(g_soundVolume * 100));
+}
+static void SoundVolumeDown() {
+    g_soundVolume = fmaxf(0.0f, g_soundVolume - 0.1f);
+    if (Alive(g_soundSource.get())) G.audioSourceSetVolume[g_soundSource.get()](g_soundVolume);
+    Notify("Sound volume: %d%%", (int)(g_soundVolume * 100));
+}
+static void PlaySound() {
+    if (g_soundFiles.empty()) ScanSounds();
+    if (g_soundFiles.empty()) return;
+    if (!G.audioClipCreate.IsValid() || !G.audioClipSetData.IsValid() ||
+        !G.tAudioSource || !G.arrayNew || !G.audioSourcePlay.IsValid()) {
+        Notify("Unity audio methods unavailable"); return;
+    }
+    std::ifstream in(g_soundFiles[g_soundIndex], std::ios::binary);
+    std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    WavInfo w;
+    if (!in.good() && bytes.empty()) { Notify("Could not read WAV file"); return; }
+    if (!ParseWav(bytes, w)) { Notify("Use PCM 16-bit mono/stereo WAV"); return; }
+    size_t frameBytes = (size_t)w.channels * 2;
+    size_t frames = w.dataBytes / frameBytes;
+    if (!frames || frames > (size_t)w.sampleRate * 30) { Notify("WAV must be 30 seconds or shorter"); return; }
+    size_t count = frames * (size_t)w.channels;
+    std::vector<float> pcm(count);
+    for (size_t i = 0; i < count; ++i) {
+        int16_t v = (int16_t)Read16(bytes, w.dataOffset + i * 2);
+        pcm[i] = (float)v / 32768.0f;
+    }
+    void *managed = G.arrayNew(Class("System", "Single").GetClass(), (uintptr_t)count);
+    if (!managed) { Notify("Could not allocate audio buffer"); return; }
+    memcpy((uint8_t *)managed + 0x20, pcm.data(), count * sizeof(float));
+    StopSound();
+    Il2CppObject *clip = G.audioClipCreate(CreateMonoString("DARK MATTER Sound"),
+        (int)frames, w.channels, w.sampleRate, false);
+    if (!clip || !G.audioClipSetData[clip](managed, 0)) {
+        if (clip) G.destroy(clip);
+        Notify("Could not create audio clip"); return;
+    }
+    g_soundClip.set(clip);
+    if (!Alive(g_soundSource.get())) {
+        Il2CppObject *go = Class("UnityEngine", "GameObject").CreateNewObjectParameters(CreateMonoString("DARK MATTER Soundboard"));
+        Il2CppObject *source = go ? G.goAddComponent[go](G.tAudioSource) : nullptr;
+        if (!source) { if (go) G.destroy(go); Kill(g_soundClip); Notify("Could not create audio source"); return; }
+        g_soundSource.set(source);
+        if (g_head.get()) G.trSetParent[Tr(go)](Tr(g_head.get()), false);
+        G.audioSourceSetSpatialBlend[source](0.0f); // 2D, local headset playback
+    }
+    G.audioSourceSetVolume[g_soundSource.get()](g_soundVolume);
+    G.audioSourceSetClip[g_soundSource.get()](clip);
+    G.audioSourcePlay[g_soundSource.get()]();
+    const std::string &p = g_soundFiles[g_soundIndex];
+    size_t slash = p.find_last_of('/');
+    Notify("Playing: %s", slash == std::string::npos ? p.c_str() : p.c_str() + slash + 1);
+}
+
 static void OnUpdate(float dt) {
     g_time += dt;
     g_frames++;
@@ -1417,6 +1697,8 @@ static void OnUpdate(float dt) {
     auto *player = (Il2CppObject *)ym::api()->localPlayer();
     if (!player) return;
     if (player != g_player.get()) {                 // first frame in this room
+        StopSound();
+        g_soundSource.clear();
         OnRoomChange();
         g_player.set(player);
         g_leftHand.set(G.leftHand[player]());
@@ -1451,6 +1733,8 @@ static void OnUpdate(float dt) {
     TeleportGunTick(in);
     try { SpawnOnHandTick(in); ItemQueueTick(); }
     catch (...) { g_itemQueue.clear(); ym::log("dark-matter: item code error"); }
+    MovementExtrasTick(in);
+    WeatherTick(dt);
     DanceTick(in, dt);              // last: it moves your hands after everything else
 }
 
