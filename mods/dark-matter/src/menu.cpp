@@ -448,7 +448,7 @@ static size_t g_soundLoadOffset = 0;
 static Ref g_voiceRecorder, g_voicePreviousClip;
 static int g_voicePreviousSourceType = 0;
 static bool g_voicePreviousLoop = true, g_voiceWasRecording = false, g_voiceOverrideActive = false;
-static double g_voiceRestoreAt = 0, g_soundNextAllowed = 0;
+static double g_voiceRestoreAt = 0, g_soundNextAllowed = 0, g_soundDuration = 0.0;
 static std::mutex g_soundMutex;
 static std::atomic<int> g_soundDecodeState{0}; // 0 idle, 1 decoding, 2 decoded, 3 failed
 static std::atomic<unsigned> g_soundGeneration{0};
@@ -2013,6 +2013,7 @@ static void StopSound() {
     }
     g_soundLoadOffset = 0;
     g_soundLoadChannels = g_soundLoadFrames = 0;
+    g_soundDuration = 0.0;
     g_soundLastProgress = -1;
     if (Alive(g_soundSource.get()) && G.asStop.IsValid()) G.asStop[g_soundSource.get()]();
     if (Alive(g_soundSource.get()) && G.asSetClip.IsValid()) G.asSetClip[g_soundSource.get()](nullptr);
@@ -2127,6 +2128,7 @@ static void SoundLoadTick() {
         g_soundClip.set(clip);
         g_soundLoadChannels = channels;
         g_soundLoadFrames = (int)frames;
+        g_soundDuration = rate > 0 ? (double)frames / (double)rate : 0.0;
         g_soundLoadOffset = 0;
         g_soundLastProgress = -1;
     }
@@ -2151,7 +2153,7 @@ static void SoundLoadTick() {
         g_soundPcm.clear();
         g_soundPcm.shrink_to_fit();
         g_soundDecodeState.store(0);
-        const double duration = rate > 0 ? (double)frames / (double)rate : 0.0;
+        const double duration = g_soundDuration;
         const bool voiceSent = StartVoicePlayback(g_soundClip.get(), duration);
         bool localStarted = false;
         if (!Alive(g_soundSource.get())) {
