@@ -1734,7 +1734,7 @@ static void SoundLoadTick() {
     Il2CppObject *arr = (Il2CppObject *)G.arrayNew(Class("System", "Single").GetClass(), (uintptr_t)samplesNow);
     if (!arr) { StopSound(); Notify("Not enough memory to load sound"); return; }
     memcpy((uint8_t *)arr + 0x20, source, samplesNow * sizeof(float));
-    if (!G.audioClipSetData[g_soundClip.get()](arr, (int)g_soundLoadOffset)) {
+    if (!G.audioClipSetData[g_soundClip.get()](arr, (int)(g_soundLoadOffset * g_soundLoadChannels))) {
         StopSound(); Notify("Could not finish loading sound"); return;
     }
     g_soundLoadOffset += framesNow;
