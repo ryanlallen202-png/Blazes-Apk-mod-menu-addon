@@ -25,6 +25,9 @@
 #include <ctime>
 #include <string>
 #include <vector>
+#include <thread>
+#include <mutex>
+#include <atomic>
 
 using namespace BNM;
 using namespace BNM::Structures::Unity;
@@ -411,8 +414,12 @@ static std::string g_soundDirectory;
 static size_t g_soundIndex = 0;
 static float g_soundVolume = 0.75f;
 static std::vector<float> g_soundPcm;
-static drmp3 *g_soundMp3 = nullptr;
 static size_t g_soundLoadOffset = 0;
+static std::mutex g_soundMutex;
+static std::atomic<int> g_soundDecodeState{0}; // 0 idle, 1 decoding, 2 decoded, 3 failed
+static std::atomic<unsigned> g_soundGeneration{0};
+static int g_soundDecodedChannels = 0, g_soundDecodedRate = 0;
+static size_t g_soundDecodedFrames = 0;
 static int g_soundLoadChannels = 0, g_soundLoadFrames = 0, g_soundLastProgress = -1;
 static char g_itemKey[64] = "";                // the last item you held (learned on grab)
 struct PendingItem { Vector3 pos, vel; };
@@ -1838,8 +1845,14 @@ static void ScanSounds() {
     Notify("Found %d WAV/MP3 files", (int)g_soundFiles.size());
 }
 static void StopSound() {
-    g_soundPcm.clear();
-    if (g_soundMp3) { drmp3_uninit(g_soundMp3); delete g_soundMp3; g_soundMp3 = nullptr; }
+    ++g_soundGeneration;                 // invalidate any decoder still working
+    g_soundDecodeState.store(0);
+    {
+        std::lock_guard<std::mutex> lock(g_soundMutex);
+        g_soundPcm.clear();
+        g_soundDecodedChannels = g_soundDecodedRate = 0;
+        g_soundDecodedFrames = 0;
+    }
     g_soundLoadOffset = 0;
     g_soundLoadChannels = g_soundLoadFrames = 0;
     g_soundLastProgress = -1;
@@ -1867,7 +1880,10 @@ static void SoundVolumeDown() {
     if (Alive(g_soundSource.get())) G.asSetVolume[g_soundSource.get()](g_soundVolume);
     Notify("Sound volume: %d%%", (int)(g_soundVolume * 100));
 }
+// File I/O and codec work run on a worker thread. Unity objects are only touched
+// later by SoundLoadTick on the game thread, so pressing Play never stalls menu input.
 static void PlaySound() {
+    if (g_soundDecodeState.load() == 1) { Notify("Sound is already loading"); return; }
     if (g_soundFiles.empty()) ScanSounds();
     if (g_soundFiles.empty()) return;
     if (!G.audioClipCreate.IsValid() || !G.audioClipSetData.IsValid() ||
@@ -1875,74 +1891,96 @@ static void PlaySound() {
         Notify("Unity audio methods unavailable"); return;
     }
     const std::string path = g_soundFiles[g_soundIndex];
-    const bool isMp3 = path.size() >= 4 && strcasecmp(path.c_str() + path.size() - 4, ".mp3") == 0;
-    int channels = 0, rate = 0;
-    size_t frames = 0;
-    std::vector<float> pcm;
-    drmp3 *mp3 = nullptr;
-    if (isMp3) {
-        mp3 = new (std::nothrow) drmp3{};
-        if (!mp3 || !drmp3_init_file(mp3, path.c_str(), nullptr)) {
-            delete mp3; Notify("Could not decode MP3"); return;
-        }
-        channels = (int)mp3->channels;
-        rate = (int)mp3->sampleRate;
-        frames = (size_t)drmp3_get_pcm_frame_count(mp3);
-        if (channels < 1 || channels > 2 || rate < 8000 || rate > 192000 || !frames ||
-            frames > (size_t)rate * 30) {
-            drmp3_uninit(mp3); delete mp3;
-            Notify("MP3 must be mono/stereo and 30 seconds or shorter"); return;
-        }
-    } else {
-        std::ifstream in(path, std::ios::binary);
-        std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-        WavInfo w;
-        if (!in.good() && bytes.empty()) { Notify("Could not read WAV file"); return; }
-        if (!ParseWav(bytes, w)) { Notify("Use PCM 16-bit mono/stereo WAV or MP3"); return; }
-        size_t frameBytes = (size_t)w.channels * 2;
-        frames = w.dataBytes / frameBytes;
-        if (!frames || frames > (size_t)w.sampleRate * 30) { Notify("WAV must be 30 seconds or shorter"); return; }
-        channels = w.channels;
-        rate = w.sampleRate;
-        size_t count = frames * (size_t)channels;
-        pcm.resize(count);
-        for (size_t n = 0; n < count; ++n) {
-            int16_t v = (int16_t)Read16(bytes, w.dataOffset + n * 2);
-            pcm[n] = (float)v / 32768.0f;
-        }
-    }
+    const unsigned generation = ++g_soundGeneration;
     StopSound();
-    Il2CppObject *clip = G.audioClipCreate(CreateMonoString("DARK MATTER Sound"),
-        (int)frames, channels, rate, false);
-    if (!clip) {
-        if (mp3) { drmp3_uninit(mp3); delete mp3; }
-        Notify("Could not create audio clip"); return;
-    }
-    g_soundClip.set(clip);
-    g_soundPcm = std::move(pcm);
-    g_soundMp3 = mp3;
-    g_soundLoadChannels = channels;
-    g_soundLoadFrames = (int)frames;
-    g_soundLoadOffset = 0;
-    g_soundLastProgress = -1;
-    Notify("Loading sound: 0%%");
+    const unsigned job = g_soundGeneration.load();
+    g_soundDecodeState.store(1);
+    Notify("Preparing sound...");
+    std::thread([path, job]() {
+        int channels = 0, rate = 0;
+        size_t frames = 0;
+        std::vector<float> pcm;
+        const bool isMp3 = path.size() >= 4 && strcasecmp(path.c_str() + path.size() - 4, ".mp3") == 0;
+        bool ok = false;
+        if (isMp3) {
+            drmp3 mp3{};
+            if (drmp3_init_file(&mp3, path.c_str(), nullptr)) {
+                channels = (int)mp3.channels;
+                rate = (int)mp3.sampleRate;
+                drmp3_uint64 count = drmp3_get_pcm_frame_count(&mp3);
+                if (channels >= 1 && channels <= 2 && rate >= 8000 && rate <= 192000 &&
+                    count > 0 && count <= (drmp3_uint64)rate * 30) {
+                    frames = (size_t)count;
+                    pcm.resize(frames * (size_t)channels);
+                    drmp3_uint64 got = drmp3_read_pcm_frames_f32(&mp3, count, pcm.data());
+                    ok = got == count;
+                }
+                drmp3_uninit(&mp3);
+            }
+        } else {
+            std::ifstream in(path, std::ios::binary);
+            std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+            WavInfo w;
+            if (in || !bytes.empty()) {
+                if (ParseWav(bytes, w)) {
+                    size_t frameBytes = (size_t)w.channels * 2;
+                    frames = w.dataBytes / frameBytes;
+                    if (frames && frames <= (size_t)w.sampleRate * 30) {
+                        channels = w.channels;
+                        rate = w.sampleRate;
+                        pcm.resize(frames * (size_t)channels);
+                        for (size_t n = 0; n < pcm.size(); ++n) {
+                            int16_t v = (int16_t)Read16(bytes, w.dataOffset + n * 2);
+                            pcm[n] = (float)v / 32768.0f;
+                        }
+                        ok = true;
+                    }
+                }
+            }
+        }
+        if (g_soundGeneration.load() != job) return;
+        if (!ok) { g_soundDecodeState.store(3); return; }
+        {
+            std::lock_guard<std::mutex> lock(g_soundMutex);
+            if (g_soundGeneration.load() != job) return;
+            g_soundPcm = std::move(pcm);
+            g_soundDecodedChannels = channels;
+            g_soundDecodedRate = rate;
+            g_soundDecodedFrames = frames;
+        }
+        g_soundDecodeState.store(2);
+    }).detach();
 }
 
 static void SoundLoadTick() {
-    if ((g_soundPcm.empty() && !g_soundMp3) || !Alive(g_soundClip.get())) return;
+    int state = g_soundDecodeState.load();
+    if (state == 3) {
+        g_soundDecodeState.store(0);
+        Notify("Could not decode sound. Check file format and 30s limit");
+        return;
+    }
+    if (state == 2 && !Alive(g_soundClip.get())) {
+        int channels = 0, rate = 0;
+        size_t frames = 0;
+        {
+            std::lock_guard<std::mutex> lock(g_soundMutex);
+            channels = g_soundDecodedChannels;
+            rate = g_soundDecodedRate;
+            frames = g_soundDecodedFrames;
+        }
+        Il2CppObject *clip = G.audioClipCreate(CreateMonoString("DARK MATTER Sound"),
+            (int)frames, channels, rate, false);
+        if (!clip) { StopSound(); Notify("Could not create audio clip"); return; }
+        g_soundClip.set(clip);
+        g_soundLoadChannels = channels;
+        g_soundLoadFrames = (int)frames;
+        g_soundLoadOffset = 0;
+        g_soundLastProgress = -1;
+    }
+    if (g_soundPcm.empty() || !Alive(g_soundClip.get())) return;
     const size_t framesLeft = (size_t)g_soundLoadFrames - g_soundLoadOffset;
     size_t framesNow = framesLeft < 4096 ? framesLeft : 4096;
-    std::vector<float> decoded;
-    const float *source = nullptr;
-    if (g_soundMp3) {
-        decoded.resize(framesNow * (size_t)g_soundLoadChannels);
-        drmp3_uint64 got = drmp3_read_pcm_frames_f32(g_soundMp3, (drmp3_uint64)framesNow, decoded.data());
-        if (!got) { StopSound(); Notify("MP3 ended before it finished loading"); return; }
-        framesNow = (size_t)got;
-        source = decoded.data();
-    } else {
-        source = g_soundPcm.data() + g_soundLoadOffset * g_soundLoadChannels;
-    }
+    const float *source = g_soundPcm.data() + g_soundLoadOffset * g_soundLoadChannels;
     const size_t samplesNow = framesNow * (size_t)g_soundLoadChannels;
     Il2CppObject *arr = (Il2CppObject *)G.arrayNew(Class("System", "Single").GetClass(), (uintptr_t)samplesNow);
     if (!arr) { StopSound(); Notify("Not enough memory to load sound"); return; }
@@ -1959,7 +1997,7 @@ static void SoundLoadTick() {
     if (g_soundLoadOffset >= (size_t)g_soundLoadFrames) {
         g_soundPcm.clear();
         g_soundPcm.shrink_to_fit();
-        if (g_soundMp3) { drmp3_uninit(g_soundMp3); delete g_soundMp3; g_soundMp3 = nullptr; }
+        g_soundDecodeState.store(0);
         if (!Alive(g_soundSource.get())) {
             Il2CppObject *go = Class("UnityEngine", "GameObject").CreateNewObjectParameters(CreateMonoString("DARK MATTER Soundboard"));
             Il2CppObject *sourceComp = go ? G.goAddComponent[go](G.tAudioSource) : nullptr;
