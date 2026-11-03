@@ -20,6 +20,7 @@
 #include <string>
 #include <vector>
 
+#define MINIMP3_NO_STDIO
 #define MINIMP3_IMPLEMENTATION
 #include "minimp3.h"
 #include "minimp3_ex.h"
@@ -1819,6 +1820,7 @@ struct Loader {
     FILE *f = nullptr;
     bool active = false, isMp3 = false, mp3Open = false;
     mp3dec_ex_t mp3{};
+    std::vector<uint8_t> mp3File;
     std::vector<mp3d_sample_t> mp3Buf;
     int channels = 0, bits = 0, fmt = 0;               // fmt 1 = whole numbers, 3 = floating point
     uint32_t rate = 0, block = 0;
@@ -1926,20 +1928,27 @@ static bool OpenWav(const std::string &path, Loader &L, const char **err) {
 // minimp3's file API reads the compressed stream into a bounded buffer and exposes
 // decoded PCM frame-by-frame. A 32 MiB compressed-file cap keeps headset memory bounded.
 static bool OpenMp3(const std::string &path, Loader &L, const char **err) {
-    FILE *check = fopen(path.c_str(), "rb");
-    if (!check) { *err = "Couldn't open that MP3 file"; return false; }
-    if (fseek(check, 0, SEEK_END) != 0) { fclose(check); *err = "Couldn't read that MP3 file"; return false; }
-    long bytes = ftell(check);
-    fclose(check);
-    if (bytes <= 0) { *err = "That MP3 file is empty"; return false; }
-    if ((uint64_t)bytes > 32u * 1024u * 1024u) { *err = "MP3 file is too large (max 32 MB)"; return false; }
+    FILE *f = fopen(path.c_str(), "rb");
+    if (!f) { *err = "Couldn't open that MP3 file"; return false; }
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); *err = "Couldn't read that MP3 file"; return false; }
+    long bytes = ftell(f);
+    if (bytes <= 0) { fclose(f); *err = "That MP3 file is empty"; return false; }
+    if ((uint64_t)bytes > 32u * 1024u * 1024u) { fclose(f); *err = "MP3 file is too large (max 32 MB)"; return false; }
+    if (fseek(f, 0, SEEK_SET) != 0) { fclose(f); *err = "Couldn't read that MP3 file"; return false; }
+    try { L.mp3File.resize((size_t)bytes); }
+    catch (...) { fclose(f); *err = "Not enough memory to read that MP3"; return false; }
+    size_t got = fread(L.mp3File.data(), 1, L.mp3File.size(), f);
+    fclose(f);
+    if (got != L.mp3File.size()) { L.mp3File.clear(); *err = "Couldn't read that MP3 file"; return false; }
 
-    int rc = mp3dec_ex_open(&L.mp3, path.c_str(), 0);
+    int rc = mp3dec_ex_open_buf(&L.mp3, L.mp3File.data(), L.mp3File.size(), 0);
+    L.mp3Open = true; // close also releases a partially built decoder index on error
     if (rc != 0) {
+        mp3dec_ex_close(&L.mp3);
+        L.mp3Open = false;
         *err = rc == MP3D_E_MEMORY ? "Not enough memory to decode that MP3" : "Couldn't decode that MP3";
         return false;
     }
-    L.mp3Open = true;
     L.isMp3 = true;
     L.channels = L.mp3.info.channels;
     L.rate = (uint32_t)L.mp3.info.hz;
@@ -1961,9 +1970,10 @@ static void CloseLoader(Loader &L) {
     if (L.mp3Open) mp3dec_ex_close(&L.mp3);
     L.mp3Open = false;
     L.active = false;
-    L.buf.clear();
-    L.mp3Buf.clear();
-    L.mono.clear();
+    std::vector<uint8_t>().swap(L.buf);
+    std::vector<uint8_t>().swap(L.mp3File);
+    std::vector<mp3d_sample_t>().swap(L.mp3Buf);
+    std::vector<float>().swap(L.mono);
 }
 
 static void AbortLoad() {

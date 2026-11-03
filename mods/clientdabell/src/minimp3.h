@@ -1,10 +1,10 @@
 #ifndef MINIMP3_H
 #define MINIMP3_H
 /*
-    https://github.com/lieff/minimp3
+    minimp3 project source
     To the extent possible under law, the author(s) have dedicated all copyright and related and neighboring rights to this software to the public domain worldwide.
     This software is distributed without any warranty.
-    See <http://creativecommons.org/publicdomain/zero/1.0/>.
+    Dedicated to the public domain under CC0 1.0.
 */
 #include <stdint.h>
 
@@ -892,7 +892,7 @@ static void L3_midside_stereo(float *left, int n)
         }
 #ifdef __GNUC__
         /* Workaround for spurious -Waggressive-loop-optimizations warning from gcc.
-         * For more info see: https://github.com/lieff/minimp3/issues/88
+         * Additional decoder context is documented in the minimp3 source.
          */
         if (__builtin_constant_p(n % 4 == 0) && n % 4 == 0)
             return;
