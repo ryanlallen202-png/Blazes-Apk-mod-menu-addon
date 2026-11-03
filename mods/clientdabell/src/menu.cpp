@@ -21,7 +21,7 @@
 #include <vector>
 #include <new>
 #define DR_MP3_IMPLEMENTATION
-#include "mods/clientdabell/src/dr_mp3.h"
+#include "dr_mp3.h"
 
 using namespace BNM;
 using namespace BNM::Structures::Unity;
