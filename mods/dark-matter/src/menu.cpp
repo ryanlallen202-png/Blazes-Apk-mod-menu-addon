@@ -1903,13 +1903,13 @@ static bool StartVoicePlayback(Il2CppObject *clip, double duration) {
         Notify("Could not route sound through voice chat");
         return false;
     }
-    g_voiceRestoreAt = g_time + (duration < 1.0 ? 1.0 : duration);
+    g_voiceRestoreAt = g_time + (duration > 0.0 ? duration : 0.05);
     return true;
 }
 
-// ---- local soundboard -------------------------------------------------------
-// This is local headset playback only. The repository forbids network activity;
-// it does not inject audio into the game's microphone or transmit clips to a lobby.
+// ---- soundboard playback -----------------------------------------------------
+// Clips play locally and are also supplied to the game's existing Photon Voice
+// Recorder input when voice chat is active, so room members hear them as voice.
 struct WavInfo { int channels = 0, sampleRate = 0; size_t dataOffset = 0, dataBytes = 0; };
 static uint16_t Read16(const std::vector<uint8_t> &b, size_t p) {
     return (uint16_t)b[p] | ((uint16_t)b[p + 1] << 8);
