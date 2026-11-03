@@ -455,6 +455,7 @@ static std::atomic<unsigned> g_soundGeneration{0};
 static int g_soundDecodedChannels = 0, g_soundDecodedRate = 0;
 static size_t g_soundDecodedFrames = 0;
 static int g_soundLoadChannels = 0, g_soundLoadFrames = 0, g_soundLastProgress = -1;
+static int g_soundLoadStage = 0;
 static char g_itemKey[64] = "";                // the last item you held (learned on grab)
 struct PendingItem { Vector3 pos, vel; };
 static std::vector<PendingItem> g_itemQueue;
@@ -2120,6 +2121,7 @@ static void SoundLoadTick() {
         return;
     }
     if (state == 2 && !Alive(g_soundClip.get())) {
+        g_soundLoadStage = 1;
         int channels = 0, rate = 0;
         size_t frames = 0;
         {
@@ -2143,12 +2145,22 @@ static void SoundLoadTick() {
     size_t framesNow = framesLeft < 4096 ? framesLeft : 4096;
     const float *source = g_soundPcm.data() + g_soundLoadOffset * g_soundLoadChannels;
     const size_t samplesNow = framesNow * (size_t)g_soundLoadChannels;
+    g_soundLoadStage = 2;
     Il2CppObject *arr = (Il2CppObject *)G.arrayNew(G.floatClass, (uintptr_t)samplesNow);
-    if (!arr) { StopSound(); Notify("Not enough memory to load sound"); return; }
-    memcpy((uint8_t *)arr + 0x20, source, samplesNow * sizeof(float));
-    if (!G.audioClipSetData[g_soundClip.get()](arr, (int)(g_soundLoadOffset * g_soundLoadChannels))) {
-        StopSound(); Notify("Could not finish loading sound"); return;
+    if (!arr) { g_soundLoadStage = 0; StopSound(); Notify("Not enough memory to load sound"); return; }
+    // Use BNM's typed managed-array view instead of assuming the IL2CPP header offset.
+    auto *managedArray = reinterpret_cast<BNM::Structures::Mono::Array<float> *>(arr);
+    float *managedData = managedArray->GetData();
+    if (!managedData || managedArray->GetCapacity() < samplesNow) {
+        g_soundLoadStage = 0; StopSound(); Notify("Could not access sound buffer"); return;
     }
+    g_soundLoadStage = 3;
+    memcpy(managedData, source, samplesNow * sizeof(float));
+    g_soundLoadStage = 4;
+    if (!G.audioClipSetData[g_soundClip.get()](arr, (int)(g_soundLoadOffset * g_soundLoadChannels))) {
+        g_soundLoadStage = 0; StopSound(); Notify("Unity rejected sound data"); return;
+    }
+    g_soundLoadStage = 0;
     g_soundLoadOffset += framesNow;
     int progress = (int)(g_soundLoadOffset * 100 / (size_t)g_soundLoadFrames);
     if (progress / 10 != g_soundLastProgress) {
@@ -3320,7 +3332,12 @@ static void OnUpdate(float dt) {
     try { SpawnOnHandTick(in); ItemQueueTick(); }
     catch (...) { g_itemQueue.clear(); ym::log("dark-matter: item code error"); }
     try { SoundLoadTick(); }
-    catch (...) { StopSound(); ym::log("dark-matter: sound loading error"); }
+    catch (...) {
+        const int stage = g_soundLoadStage;
+        g_soundLoadStage = 0;
+        try { StopSound(); } catch (...) {}
+        ym::log("dark-matter: sound loading error stage=%d", stage);
+    }
     try { WeatherTick(dt); }
     catch (...) { WeatherOff(); g_wx = -1; for (bool &b : g_wxSel) b = false; ym::log("dark-matter: effects error, turned off"); }
     try { TodTick(); }
