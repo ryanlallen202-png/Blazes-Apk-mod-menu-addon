@@ -420,8 +420,6 @@ static bool LeftHandItem();
 static void ScanSounds();
 static void PlaySound();
 static void StopSound();
-static void PreviousSound();
-static void NextSound();
 static void SoundVolumeUp();
 static void SoundVolumeDown();
 
@@ -571,10 +569,8 @@ static const struct { const char *label, *tip; } kTips[] = {
     {"Launch Items Gun", "Aim with right grip and press trigger to launch your held item."},
     {"Menu Size", "Cycle the menu between 50% and 150% size."},
     {"Soundboard", "Play your WAV/MP3 clips through your Photon voice-chat stream."},
-    {"Scan Sounds Folder", "Find WAV files in the DARK MATTER sounds folder."},
-    {"Previous Sound", "Select the previous WAV clip."},
-    {"Next Sound", "Select the next WAV clip."},
-    {"Play Sound", "Send the selected WAV/MP3 through your voice-chat stream when available."},
+    {"Scan Sounds Folder", "Refresh the sound buttons from your mods/sounds folder."},
+    {"Play Sound", "Tap a sound-file button to play that clip through your voice-chat stream."},
     {"Stop Sound", "Stop local sound playback."},
     {"Volume Up", "Raise local soundboard volume."},
     {"Volume Down", "Lower local soundboard volume."},
@@ -1870,7 +1866,7 @@ static void StopSound() {
     g_soundActive = false;
     g_soundEnd = 0;
     g_soundStarted = 0;
-    g_soundPcm.clear();
+    std::vector<float>().swap(g_soundPcm);
     g_soundFramesTotal = g_soundFramesQueued = 0;
     g_soundChannels = g_soundSampleRate = 0;
 }
@@ -1904,16 +1900,6 @@ static void ScanSounds() {
     g_dirty = true;
     Notify("Found %d sounds. Tap one to play", (int)g_soundFiles.size());
 }
-static void SelectSound(int direction) {
-    if (g_soundFiles.empty()) { Notify("No sounds. Scan sounds folder first"); return; }
-    int n = (int)g_soundFiles.size();
-    g_soundIndex = (size_t)((((int)g_soundIndex + direction) % n + n) % n);
-    const std::string &p = g_soundFiles[g_soundIndex];
-    size_t slash = p.find_last_of('/');
-    Notify("Selected: %s", slash == std::string::npos ? p.c_str() : p.c_str() + slash + 1);
-}
-static void PreviousSound() { SelectSound(-1); }
-static void NextSound() { SelectSound(1); }
 static void SoundVolumeUp() {
     g_soundVolume = fminf(1.0f, g_soundVolume + 0.1f);
     if (Alive(g_soundSource.get())) G.audioSourceSetVolume[g_soundSource.get()](g_soundVolume);
