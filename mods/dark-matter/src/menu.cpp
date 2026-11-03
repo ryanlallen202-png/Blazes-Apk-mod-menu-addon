@@ -14,7 +14,13 @@
 #include <cctype>
 #include <dirent.h>
 #include <fstream>
+#include <fcntl.h>
+#include <unistd.h>
 #include <sys/stat.h>
+#include <sys/types.h>
+#include <media/NdkMediaCodec.h>
+#include <media/NdkMediaExtractor.h>
+#include <media/NdkMediaFormat.h>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -84,7 +90,7 @@ static struct {
                  lrSetPositionCount, lrSetPosition, lrSetStartWidth, lrSetEndWidth, lrSetUseWorldSpace;
     Method<Quaternion> trGetRotation;
     Method<Vector3> trGetPosition, trGetForward, trGetRight, trGetUp, trInverseTransformPoint, trTransformPoint, rbGetVelocity;
-    Method<bool> alive, tryGetBool, haptic, raycast;
+    Method<bool> alive, tryGetBool, tryGetVector2, haptic, raycast;
     Method<XRDevice> deviceAtNode;
     Method<Il2CppObject *> trGetParent, trGetRoot, getComponentsInChildren, netLocal;
     Method<void> pvRpc;
@@ -95,6 +101,8 @@ static struct {
     Method<bool> itemHeld;
     Method<void> itemDrop, setHeldItem;
     void *(*arrayNew)(void *, uintptr_t) = nullptr;
+    uintptr_t (*arrayLength)(void *) = nullptr;
+    void *(*arrayAddrWithSize)(void *, int32_t, uintptr_t) = nullptr;
     void *(*valueBox)(void *, void *) = nullptr;
     Method<bool> behaviourGetEnabled;
     Method<void> behaviourSetEnabled;
@@ -111,11 +119,18 @@ static struct {
     Method<Il2CppObject *> audioClipCreate, applicationPersistentPath;
     Method<bool> audioClipSetData;
     Method<void> audioSourceSetClip, audioSourcePlay, audioSourceStop, audioSourceSetVolume, audioSourceSetSpatialBlend;
-    BNM::MonoType *tAudioSource = nullptr;
+    BNM::MonoType *tAudioSource = nullptr, *tRecorder = nullptr;
+    Method<int> recorderGetSourceType;
+    Method<void> recorderSetSourceType, recorderSetAudioClip, recorderSetLoopAudioClip;
+    Method<bool> recorderRestart;
+    Method<Il2CppObject *> recorderGetAudioClip;
+    Method<bool> recorderGetLoopAudioClip, recorderGetVoiceDetection, recorderGetTransmitEnabled,
+                 recorderGetRecording;
+    Method<void> recorderSetVoiceDetection, recorderSetRecording;
     Method<void> goSetLayer;
     BNM::MonoType *tRigidbody = nullptr, *tCollider = nullptr, *tCanvas = nullptr, *tText = nullptr,
                   *tFont = nullptr, *tRenderer = nullptr, *tMeshCollider = nullptr, *tLine = nullptr;
-    Ref shader, font, usagePrimary, usageSecondary, usageGrip, usageTrigger;
+    Ref shader, font, usagePrimary, usageSecondary, usageGrip, usageTrigger, usageAxis;
 } G;
 
 static bool Lookups() {
@@ -145,6 +160,24 @@ static bool Lookups() {
     G.audioSourceSetSpatialBlend = audioSource.GetMethod("set_spatialBlend", 1);
     G.tAudioSource = audioSource.GetMonoType();
     G.applicationPersistentPath = application.GetMethod("get_persistentDataPath", 0);
+    Class recorder("Photon.Voice.Unity", "Recorder");
+    if (recorder.IsValid()) {
+        G.tRecorder = recorder.GetMonoType();
+        G.recorderGetSourceType = recorder.GetMethod("get_SourceType", 0);
+        G.recorderSetSourceType = recorder.GetMethod("set_SourceType", 1);
+        G.recorderGetAudioClip = recorder.GetMethod("get_AudioClip", 0);
+        G.recorderSetAudioClip = recorder.GetMethod("set_AudioClip", 1);
+        G.recorderGetLoopAudioClip = recorder.GetMethod("get_LoopAudioClip", 0);
+        G.recorderSetLoopAudioClip = recorder.GetMethod("set_LoopAudioClip", 1);
+        G.recorderGetVoiceDetection = recorder.GetMethod("get_VoiceDetection", 0);
+        G.recorderSetVoiceDetection = recorder.GetMethod("set_VoiceDetection", 1);
+        G.recorderGetTransmitEnabled = recorder.GetMethod("get_TransmitEnabled", 0);
+        G.recorderGetRecording = recorder.GetMethod("get_RecordingEnabled", 0);
+        if (!G.recorderGetRecording.IsValid()) G.recorderGetRecording = recorder.GetMethod("get_IsRecording", 0);
+        G.recorderSetRecording = recorder.GetMethod("set_RecordingEnabled", 1);
+        if (!G.recorderSetRecording.IsValid()) G.recorderSetRecording = recorder.GetMethod("set_IsRecording", 1);
+        G.recorderRestart = recorder.GetMethod("RestartRecording", 0);
+    }
     G.goSetActive = go.GetMethod("SetActive", 1);
     Class comp("UnityEngine", "Component");
     G.compTransform = comp.GetMethod("get_transform", 0);
@@ -184,6 +217,8 @@ static bool Lookups() {
     G.rtSetSizeDelta = rt.GetMethod("set_sizeDelta", 1);
     G.deviceAtNode = dev.GetMethod("GetDeviceAtXRNode", 1);
     G.tryGetBool = dev.GetMethod("TryGetFeatureValue_bool", 3);
+    G.tryGetVector2 = dev.GetMethod("TryGetFeatureValue_Vector2f", 3);
+    if (!G.tryGetVector2.IsValid()) G.tryGetVector2 = dev.GetMethod("TryGetFeatureValue_Vector2", 3);
     G.haptic = dev.GetMethod("SendHapticImpulse", 4);    // optional: a small buzz on press
     G.leftHand = player.GetField("leftHandTransform");
     G.rightHand = player.GetField("rightHandTransform");
@@ -248,6 +283,8 @@ static bool Lookups() {
         G.objectClass = Class("System", "Object").GetClass();
         G.stringClass = Class("System", "String").GetClass();
         G.arrayNew = (decltype(G.arrayNew))ym::api()->resolve("il2cpp_array_new");
+        G.arrayLength = (decltype(G.arrayLength))ym::api()->resolve("il2cpp_array_length");
+        G.arrayAddrWithSize = (decltype(G.arrayAddrWithSize))ym::api()->resolve("il2cpp_array_addr_with_size");
         G.valueBox = (decltype(G.valueBox))ym::api()->resolve("il2cpp_value_box");
         ym::log("dark-matter: items rpc=%d pv=%d item=%d box=%d", G.rpcCreateItem != nullptr, G.pvRpc.IsValid(),
                 G.itemKey.IsValid(), G.arrayNew && G.valueBox);
@@ -273,15 +310,21 @@ static bool Lookups() {
     G.usageSecondary.set((Il2CppObject *)CreateMonoString("SecondaryButton"));
     G.usageGrip.set((Il2CppObject *)CreateMonoString("GripButton"));
     G.usageTrigger.set((Il2CppObject *)CreateMonoString("TriggerButton"));
+    G.usageAxis.set((Il2CppObject *)CreateMonoString("Primary2DAxis"));
     for (const char *s : {"Universal Render Pipeline/Unlit", "Universal Render Pipeline/Lit"})
         if (!G.shader.get() && G.shaderFind.IsValid()) G.shader.set(G.shaderFind((BNM::Structures::Mono::String *)CreateMonoString(s)));
     // Arial, like ii's menu (Unity 6 calls it LegacyRuntime.ttf)
     for (const char *f : {"LegacyRuntime.ttf", "Arial.ttf"})
         if (!G.font.get() && G.builtinResource.IsValid() && G.tFont)
             G.font.set(G.builtinResource((Il2CppObject *)G.tFont, CreateMonoString(f)));
-    if (!G.font.get() && G.findAll.IsValid() && G.tFont) {   // else any font the game loaded (one time)
-        auto *arr = (uint8_t *)G.findAll((Il2CppObject *)G.tFont);
-        if (arr && *(uintptr_t *)(arr + 0x18) > 0) G.font.set(((Il2CppObject **)(arr + 0x20))[0]);
+    if (!G.font.get() && G.findAll.IsValid() && G.tFont && G.arrayLength && G.arrayAddrWithSize) {
+        // Else use the first loaded font. Read the managed array through IL2CPP's API,
+        // never by assuming a fixed object-header or element offset.
+        auto *arr = G.findAll((Il2CppObject *)G.tFont);
+        if (arr && G.arrayLength(arr) > 0) {
+            auto **first = (Il2CppObject **)G.arrayAddrWithSize(arr, (int32_t)sizeof(Il2CppObject *), 0);
+            if (first) G.font.set(*first);
+        }
     }
     G.ok = G.createPrimitive.IsValid() && G.goTransform.IsValid() && G.trSetPosition.IsValid() &&
            G.deviceAtNode.IsValid() && G.tryGetBool.IsValid() && G.leftHand.IsValid();
@@ -340,7 +383,7 @@ static Buttons ReadButtons() {
 
 // Feature switches. Every feature only changes your own game.
 static bool f_velocityFly, f_ironMan, f_tpGun, f_noclip, f_speedBoost, f_noGravity;
-static bool f_itemGun, f_spawnOnHand, f_car;
+static bool f_itemGun, f_spawnOnHand, f_car, f_launchGun, f_megaJump, f_flingGun;
 static char g_itemKey[64] = "";                // the last item you held (learned on grab)
 struct PendingItem { Vector3 pos, vel; };
 static std::vector<PendingItem> g_itemQueue;
@@ -352,7 +395,7 @@ static bool g_danceSel[kDances];
 static int g_dance = -1;            // the picked dance, -1 = none
 static bool f_fly, f_fastFly, f_platforms, f_lowGravity, f_rainbow, f_fps, f_clock, f_rightHand,
             f_notify = true;
-static bool f_superSpeed, f_superFly, f_rocketBoots, f_dash, f_grapple, f_groundPound;
+static bool f_superSpeed, f_superFly, f_rocketBoots, f_dash, f_grapple, f_groundPound, f_thumbstickFly;
 static bool f_rain, f_snow;
 static Ref g_soundSource, g_soundClip;
 static std::vector<std::string> g_soundFiles;
@@ -372,17 +415,20 @@ static void PointerToHand();
 static void NextPointer();
 static void NextIronSpeed();
 static void NextCarSpeed();
+static void NextJumpPower();
+static void NextMenuSize();
 static void ApplySpeedBoost();
 static void ApplyGravity();
 static void DancePicked();
 static void ArmDupe9();
 static void ArmDupe27();
+static void ArmDupe27Wide();
+static void SpawnItemCircle();
+static void SpawnItemRain();
 static bool LeftHandItem();
 static void ScanSounds();
 static void PlaySound();
 static void StopSound();
-static void PreviousSound();
-static void NextSound();
 static void SoundVolumeUp();
 static void SoundVolumeDown();
 
@@ -396,6 +442,7 @@ struct Item {
     Cat target = MAIN;            // OPEN: the page it opens
     bool *flag = nullptr;         // TOGGLE: the switch
     void (*fn)() = nullptr;       // ACTION, or called after a TOGGLE changes
+    int soundIndex = -1;           // >= 0 for a sound-file button
 };
 // The owner's layout (2026-10-31). Keep this order.
 static Item g_items[] = {
@@ -427,6 +474,10 @@ static Item g_items[] = {
     {MOVEMENT, "Dash", TOGGLE, MAIN, &f_dash},
     {MOVEMENT, "Grapple Hook", TOGGLE, MAIN, &f_grapple},
     {MOVEMENT, "Ground Pound", TOGGLE, MAIN, &f_groundPound},
+    {MOVEMENT, "Mega Jump", TOGGLE, MAIN, &f_megaJump},
+    {MOVEMENT, "Thumbstick Fly", TOGGLE, MAIN, &f_thumbstickFly},
+    {MOVEMENT, "Jump Power", ACTION, MAIN, nullptr, NextJumpPower},
+    {MOVEMENT, "Fling Gun", TOGGLE, MAIN, &f_flingGun},
 
     {RIG, "Exit Rig Mods", OPEN, MAIN},
     {RIG, "Wave", TOGGLE, MAIN, &g_danceSel[0], DancePicked},
@@ -450,12 +501,17 @@ static Item g_items[] = {
     {ITEMS, "Spawn Item Gun", TOGGLE, MAIN, &f_itemGun},
     {ITEMS, "Duplicate Items (3x3)", ACTION, MAIN, nullptr, ArmDupe9},
     {ITEMS, "Duplicate Items (3x3x3)", ACTION, MAIN, nullptr, ArmDupe27},
+    {ITEMS, "Duplicate Items (9x3)", ACTION, MAIN, nullptr, ArmDupe27Wide},
+    {ITEMS, "Item Circle (27)", ACTION, MAIN, nullptr, SpawnItemCircle},
+    {ITEMS, "Item Rain (27)", ACTION, MAIN, nullptr, SpawnItemRain},
+    {ITEMS, "Launch Items Gun", TOGGLE, MAIN, &f_launchGun},
     {ITEMS, "Spawn On Hand", TOGGLE, MAIN, &f_spawnOnHand},
 
     {SETTINGS, "Exit Settings", OPEN, MAIN},
     {SETTINGS, "Change Pointer Position", ACTION, MAIN, nullptr, NextPointer},
     {SETTINGS, "Iron Man Speed", ACTION, MAIN, nullptr, NextIronSpeed},
     {SETTINGS, "Car Speed", ACTION, MAIN, nullptr, NextCarSpeed},
+    {SETTINGS, "Menu Size", ACTION, MAIN, nullptr, NextMenuSize},
     {SETTINGS, "Right Hand Menu", TOGGLE, MAIN, &f_rightHand, PointerToHand},
     {SETTINGS, "Change Menu Theme", ACTION, MAIN, nullptr, NextTheme},
     {SETTINGS, "Rainbow Menu", TOGGLE, MAIN, &f_rainbow},
@@ -470,9 +526,6 @@ static Item g_items[] = {
 
     {SOUND, "Exit Soundboard", OPEN, MAIN},
     {SOUND, "Scan Sounds Folder", ACTION, MAIN, nullptr, ScanSounds},
-    {SOUND, "Previous Sound", ACTION, MAIN, nullptr, PreviousSound},
-    {SOUND, "Next Sound", ACTION, MAIN, nullptr, NextSound},
-    {SOUND, "Play Sound", ACTION, MAIN, nullptr, PlaySound},
     {SOUND, "Stop Sound", ACTION, MAIN, nullptr, StopSound},
     {SOUND, "Volume Up", ACTION, MAIN, nullptr, SoundVolumeUp},
     {SOUND, "Volume Down", ACTION, MAIN, nullptr, SoundVolumeDown},
@@ -505,6 +558,10 @@ static const struct { const char *label, *tip; } kTips[] = {
     {"Dash", "Press X for a short forward burst."},
     {"Grapple Hook", "Hold left grip and right trigger to pull toward a surface."},
     {"Ground Pound", "Press B to drop quickly."},
+    {"Mega Jump", "Press B for a powerful jump; cooldown prevents repeated firing."},
+    {"Thumbstick Fly", "Left stick moves; right stick controls height."},
+    {"Jump Power", "Cycle jump strength; select normal to restore the original values."},
+    {"Fling Gun", "Press A to launch yourself in the direction of your right hand."},
     {"Floss", "Hold left trigger to floss."},
     {"Dab", "Hold left trigger to dab."},
     {"Clap", "Hold left trigger to clap."},
@@ -515,11 +572,14 @@ static const struct { const char *label, *tip; } kTips[] = {
     {"Hype", "Hold left trigger for a hype dance."},
     {"Rain", "Local rain effect; only you see it."},
     {"Snow", "Local snow effect; only you see it."},
-    {"Soundboard", "Play local WAV clips from your sounds folder."},
-    {"Scan Sounds Folder", "Find WAV files in the DARK MATTER sounds folder."},
-    {"Previous Sound", "Select the previous WAV clip."},
-    {"Next Sound", "Select the next WAV clip."},
-    {"Play Sound", "Play the selected WAV locally through your headset."},
+    {"Duplicate Items (9x3)", "Spawn a one-time 27-item grid, with a 3-second batch cooldown."},
+    {"Item Circle (27)", "Spawn one ring of 27 copies around you."},
+    {"Item Rain (27)", "Spawn one bounded batch of 27 copies above you."},
+    {"Launch Items Gun", "Aim with right grip and press trigger to launch your held item."},
+    {"Menu Size", "Cycle the menu between 50% and 150% size."},
+    {"Soundboard", "Play your WAV/MP3 clips through your Photon voice-chat stream."},
+    {"Scan Sounds Folder", "Refresh the sound buttons from your mods/sounds folder."},
+    {"Play Sound", "Tap a sound-file button to play that clip through your voice-chat stream."},
     {"Stop Sound", "Stop local sound playback."},
     {"Volume Up", "Raise local soundboard volume."},
     {"Volume Down", "Lower local soundboard volume."},
@@ -568,12 +628,12 @@ static const Theme &T() { return kThemes[g_theme]; }
 
 // Layout in meters, matching ii's menu as it was ported to Yeeps. Everything is drawn
 // on a "board" object: +x goes across, +y goes up, the player looks at it from -z.
-static constexpr int kRows = 8;                                   // buttons per page
-static const float kBoardW = 0.46f, kBoardH = 0.43f, kBtnW = 0.205f, kBtnH = 0.058f;
-static const float kTitleY = 0.18f, kSideX = 0.20f, kSideW = 0.055f, kSideH = 0.055f;
-static const float kSideY = 0.18f;
-static float RowY(int r) { return 0.105f - (r / 2) * 0.074f; }
-static float ColX(int r) { return (r % 2 == 0) ? -0.112f : 0.112f; }
+static constexpr int kRows = 10;                                  // five roomy rows per column
+static const float kBoardW = 0.62f, kBoardH = 0.59f, kBtnW = 0.28f, kBtnH = 0.073f;
+static const float kTitleY = 0.245f, kSideX = 0.27f, kSideW = 0.065f, kSideH = 0.065f;
+static const float kSideY = 0.245f;
+static float RowY(int r) { return 0.205f - (r / 2) * 0.09f; }
+static float ColX(int r) { return (r % 2 == 0) ? -0.155f : 0.155f; }
 
 static Ref g_menu, g_board, g_bg, g_outline, g_pointer, g_title, g_titleBar;
 static Ref g_rowCube[kRows], g_rowLabel[kRows], g_rowText[kRows];
@@ -584,7 +644,11 @@ static bool g_built = false, g_menuShown = false, g_dirty = true;
 static Cat g_cat = MAIN;
 static int g_page = 0;
 static std::vector<Item *> g_view;                                // what the current page list shows
+static std::vector<Item> g_soundItems;
+static std::vector<std::string> g_soundLabels;
 static double g_time = 0, g_nextPress = 0, g_notifyUntil = 0, g_nextTitle = 0;
+static const float kMenuSizes[] = {0.5f, 0.75f, 1.0f, 1.25f, 1.5f};
+static int g_menuSizeIndex = 1;
 static int g_touching = -2, g_frames = 0;
 static float g_fps = 0;
 
@@ -597,6 +661,8 @@ static void BuildView() {
         for (auto &it : g_items) if (it.kind == TOGGLE && *it.flag && it.flag != &f_notify) g_view.push_back(&it);
     } else {
         for (auto &it : g_items) if (it.cat == g_cat) g_view.push_back(&it);
+        if (g_cat == SOUND)
+            for (auto &it : g_soundItems) g_view.push_back(&it);
     }
     if (g_page >= PageCount()) g_page = 0;
 }
@@ -619,7 +685,7 @@ static Il2CppObject *Label(Il2CppObject *canvasT, const char *s, Vector3 pos, fl
     if (G.textSetFontStyle.IsValid()) G.textSetFontStyle[text](1);   // Bold, crisp dashboard typography
     if (G.textSetBestFit.IsValid()) {            // shrink long labels to fit their button
         G.textSetBestFit[text](true);
-        G.textSetMinSize[text](1);
+        G.textSetMinSize[text](size >= 20 ? 16 : size >= 16 ? 14 : size);
         G.textSetMaxSize[text](size);
     }
     G.graphicSetColor[text](Color(1, 1, 1, 1));
@@ -689,20 +755,20 @@ static void BuildMenu() {
         g_rowCube[r].set(Part(bt, T().button, Vector3(ColX(r), RowY(r), -0.005f), Vector3(kBtnW, kBtnH, 0.009f)));
     g_prev.set(Part(bt, T().button, Vector3(-kSideX, kSideY, 0), Vector3(kSideW, kSideH, 0.009f)));
     // Wide header with compact page controls: a new landscape console layout.
-    g_titleBar.set(Part(bt, T().buttonOn, Vector3(0, kTitleY, -0.002f), Vector3(kBoardW - 0.11f, 0.045f, 0.009f)));
+    g_titleBar.set(Part(bt, T().buttonOn, Vector3(0, kTitleY, -0.002f), Vector3(kBoardW - 0.16f, 0.055f, 0.009f)));
     g_next.set(Part(bt, T().button, Vector3(kSideX, kSideY, 0), Vector3(kSideW, kSideH, 0.009f)));
 
-    if (Il2CppObject *canvas = Canvas(bt, Vector3(0, 0, -0.0105f), kBoardW + 0.04f, kBoardH + 0.1f)) {
+    if (Il2CppObject *canvas = Canvas(bt, Vector3(0, 0, -0.0105f), kBoardW + 0.12f, kBoardH + 0.12f)) {
         Il2CppObject *ct = Tr(canvas);
-        Label(ct, "DARK MATTER", Vector3(0, kTitleY, 0), kBoardW - 0.11f, 0.045f, 26, &g_title);
+        Label(ct, "DARK MATTER", Vector3(0, kTitleY, 0), kBoardW - 0.16f, 0.055f, 30, &g_title);
         for (int r = 0; r < kRows; r++)
-            g_rowLabel[r].set(Label(ct, "", Vector3(ColX(r), RowY(r), 0), kBtnW, kBtnH, 17, &g_rowText[r]));
-        Label(ct, "<", Vector3(-kSideX, kSideY, -0.0005f), kSideW, 0.05f, 28, nullptr);
-        Label(ct, ">", Vector3(kSideX, kSideY, -0.0005f), kSideW, 0.05f, 28, nullptr);
-        Label(ct, "", Vector3(0, -kBoardH / 2 - 0.02f, 0), kBoardW + 0.1f, 0.03f, 15, &g_tipText);
+            g_rowLabel[r].set(Label(ct, "", Vector3(ColX(r), RowY(r), 0), kBtnW, kBtnH, 20, &g_rowText[r]));
+        Label(ct, "<", Vector3(-kSideX, kSideY, -0.0005f), kSideW, 0.06f, 30, nullptr);
+        Label(ct, ">", Vector3(kSideX, kSideY, -0.0005f), kSideW, 0.06f, 30, nullptr);
+        Label(ct, "", Vector3(0, -kBoardH / 2 - 0.025f, 0), kBoardW + 0.1f, 0.035f, 16, &g_tipText);
         char ver[64];
         snprintf(ver, sizeof ver, "DARK MATTER  //  %s", ym::api()->gameVersion);
-        Label(ct, ver, Vector3(0, -kBoardH / 2 + 0.012f, 0), kBoardW, 0.02f, 11, nullptr);
+        Label(ct, ver, Vector3(0, -kBoardH / 2 + 0.018f, 0), kBoardW, 0.022f, 13, nullptr);
     }
     // Pointer: a small ball on the index finger of the other hand
     if (Il2CppObject *p = Prim(0, T().bgB, false)) {
@@ -713,7 +779,7 @@ static void BuildMenu() {
     // Notifications: a line of text low in your view, like ii's notifications
     if (Il2CppObject *n = Canvas(g_head.get(), Vector3(0, -0.12f, 0.6f), 0.5f, 0.05f)) {
         g_notifyGo.set(n);
-        Label(Tr(n), "", Vector3(0, 0, 0), 0.5f, 0.05f, 22, &g_notifyText);
+        Label(Tr(n), "", Vector3(0, 0, 0), 0.62f, 0.06f, 24, &g_notifyText);
         G.goSetActive[n](false);
     }
     G.goSetActive[menu](false);
@@ -745,9 +811,12 @@ static void RenderPage() {
         if (!used) continue;
         Item *it = g_view[i];
         bool on = it->kind == TOGGLE && *it->flag;
-        SetText(g_rowText[r], it->label);
+        char display[160];
+        if (it->kind == TOGGLE) snprintf(display, sizeof display, "%s %s", on ? "[ON]" : "[OFF]", it->label);
+        else snprintf(display, sizeof display, "%s", it->label);
+        SetText(g_rowText[r], display);
         SetColor(g_rowCube[r].get(), r == g_flashRow ? Color(1, 0.9f, 0.6f, 1) : on ? T().buttonOn : T().button);
-        if (Alive(g_rowText[r].get())) G.graphicSetColor[g_rowText[r].get()](on ? Color(1, 1, 1, 1) : T().title);
+        if (Alive(g_rowText[r].get())) G.graphicSetColor[g_rowText[r].get()](Color(1, 1, 1, 1));
     }
     bool pages = PageCount() > 1;
     Show(g_prev, pages);
@@ -784,7 +853,7 @@ static void UpdateTitle() {
         }
         n += snprintf(buf + n, sizeof buf - n, "<b><color=#%02X%02X%02X>%c</color></b>", Hex(c.r), Hex(c.g), Hex(c.b), word[i]);
     }
-    n += snprintf(buf + n, sizeof buf - n, " <color=grey>[</color><color=white>%d</color><color=grey>]</color>", g_page + 1);
+    n += snprintf(buf + n, sizeof buf - n, " <size=17><color=#D8E1F2>%s  |  %d/%d</color></size>", kCatName[g_cat], g_page + 1, PageCount());
     if (f_fps) n += snprintf(buf + n, sizeof buf - n, "<size=16>  %d fps</size>", (int)(g_fps + 0.5f));
     if (f_clock) {
         time_t now = time(nullptr);
@@ -837,6 +906,7 @@ static void Press(Item *it) {
     case OPEN:
         g_cat = it->target;
         g_page = 0;
+        if (g_cat == SOUND && g_soundItems.empty()) ScanSounds();
         break;
     case TOGGLE:
         *it->flag = !*it->flag;
@@ -844,7 +914,15 @@ static void Press(Item *it) {
         Notify("[%s] %s", *it->flag ? "ON" : "OFF", it->label);
         break;
     case ACTION:
-        if (it->fn) it->fn();
+        if (it->soundIndex >= 0) {
+            g_soundIndex = (size_t)it->soundIndex;
+            try { PlaySound(); }
+            catch (...) {
+                try { StopSound(); } catch (...) {}
+                Notify("Soundboard error; microphone restored");
+                ym::log("dark-matter: soundboard playback exception");
+            }
+        } else if (it->fn) it->fn();
         break;
     }
     g_dirty = true;
@@ -897,7 +975,8 @@ static void AnimateMenu() {
     float open = (float)(g_time - g_openTime) / 0.15f;     // pop open like ii's menu
     if (open <= 1.05f && Alive(g_menu.get())) {
         float k = open >= 1 ? 1 : 1 - (1 - open) * (1 - open);
-        G.trSetLocalScale[Tr(g_menu.get())](Vector3(k, k, k));
+        float size = k * kMenuSizes[g_menuSizeIndex];
+        G.trSetLocalScale[Tr(g_menu.get())](Vector3(size, size, size));
     }
     if (g_flashRow != -2 && g_time >= g_flashUntil) { g_flashRow = -2; g_dirty = true; }
     float t = 0.5f + 0.5f * sinf((float)g_time * 2.0f);
@@ -954,10 +1033,42 @@ static void GoToSpot() {
     Notify("Teleported to your spot");
 }
 
+static int g_jumpPowerLevel = 0;
+static Ref g_jumpPowerPlayer;
+static float g_jumpPowerOldMax = 0, g_jumpPowerOldMultiplier = 0;
+static const float kJumpMax[] = {0, 11.0f, 14.0f, 18.0f};
+static const float kJumpMult[] = {0, 1.8f, 2.4f, 3.0f};
+static void NextJumpPower() {
+    Il2CppObject *p = g_player.get();
+    if (!p || !G.maxJumpSpeed.IsValid() || !G.jumpMultiplier.IsValid()) { Notify("Jump settings unavailable"); return; }
+    if (f_speedBoost) { Notify("Turn off Speed Boost first"); return; }
+    if (!g_jumpPowerLevel || g_jumpPowerPlayer.get() != p) {
+        g_jumpPowerOldMax = G.maxJumpSpeed[p]();
+        g_jumpPowerOldMultiplier = G.jumpMultiplier[p]();
+        g_jumpPowerPlayer.set(p);
+    }
+    g_jumpPowerLevel = (g_jumpPowerLevel + 1) % 4;
+    if (!g_jumpPowerLevel) {
+        G.maxJumpSpeed[p] = g_jumpPowerOldMax;
+        G.jumpMultiplier[p] = g_jumpPowerOldMultiplier;
+        g_jumpPowerPlayer.clear();
+        Notify("Jump power: normal");
+    } else {
+        G.maxJumpSpeed[p] = kJumpMax[g_jumpPowerLevel];
+        G.jumpMultiplier[p] = kJumpMult[g_jumpPowerLevel];
+        Notify("Jump power: level %d", g_jumpPowerLevel);
+    }
+}
 static const float kIronSpeeds[] = {15, 12, 8, 4};
 static int g_ironSpeed = 0;
 static void NextIronSpeed() { g_ironSpeed = (g_ironSpeed + 1) % 4; Notify("Iron Man speed: %d", (int)kIronSpeeds[g_ironSpeed]); }
 static void NextTheme() { g_theme = (g_theme + 1) % kThemeCount; Notify("Theme: %s", T().name); }
+static void NextMenuSize() {
+    g_menuSizeIndex = (g_menuSizeIndex + 1) % 5;
+    float size = kMenuSizes[g_menuSizeIndex];
+    if (Alive(g_menu.get())) G.trSetLocalScale[Tr(g_menu.get())](Vector3(size, size, size));
+    Notify("Menu size: %d%%", (int)(size * 100));
+}
 static void AllOff() {
     for (auto &it : g_items) if (it.kind == TOGGLE && it.flag != &f_notify) *it.flag = false;   // ticks undo each mod
     g_dance = -1;
@@ -1154,7 +1265,7 @@ static void NoclipTick(const Buttons &in) {
 static Ref g_gunLine, g_gunLineGo, g_gunBall;
 static bool g_gunTrigger = false;
 static void TeleportGunTick(const Buttons &in) {
-    bool aiming = (f_tpGun || f_itemGun) && in.rgrip;
+    bool aiming = (f_tpGun || f_itemGun || f_launchGun) && in.rgrip;
     if (!aiming) {
         Show(g_gunLineGo, false);
         Show(g_gunBall, false);
@@ -1192,10 +1303,11 @@ static void TeleportGunTick(const Buttons &in) {
     G.lrSetPosition[g_gunLine.get()](1, end);
     SetColor(g_gunBall.get(), in.rtrig ? T().buttonOn : T().bgB);
     if (in.rtrig && !g_gunTrigger && found) {
-        if (f_itemGun) {                                  // Spawn Item Gun: an item at that spot
+        if (f_launchGun || f_itemGun) {                   // item spawn at the aim point
             if (g_time >= g_nextItem && LeftHandItem()) {
                 g_nextItem = g_time + 0.5;
-                g_itemQueue.push_back({end + Vector3(0, 0.3f, 0), Vector3(0, 0, 0)});
+                Vector3 launch = f_launchGun ? dir * 9.0f : Vector3(0, 0, 0);
+                g_itemQueue.push_back({end + Vector3(0, 0.3f, 0), launch});
             }
         } else TeleportPlayer(end + Vector3(0, 1.0f, 0));
     }
@@ -1470,6 +1582,39 @@ static bool LeftHandItem() {
 }
 static void ArmDupe9() { if (LeftHandItem()) SpawnGrid(9); }
 static void ArmDupe27() { if (LeftHandItem()) SpawnGrid(27); }
+static void ArmDupe27Wide() {
+    if (!LeftHandItem()) return;
+    Il2CppObject *head = g_head.get(); if (!head) return;
+    Vector3 f = Flat(G.trGetForward[head]()), r = Cross(Vector3(0, 1, 0), f);
+    Vector3 base = G.trGetPosition[head]() + f * 1.4f + Vector3(0, -0.35f, 0);
+    std::vector<PendingItem> list;
+    for (int z = 0; z < 3; ++z)
+        for (int x = 0; x < 9; ++x)
+            list.push_back({base + r * ((x - 4) * 0.32f) + f * (z * 0.42f), Vector3(0, 0, 0)});
+    QueueItems(list);
+}
+static void SpawnItemCircle() {
+    if (!LeftHandItem()) return;
+    Il2CppObject *head = g_head.get(); if (!head) return;
+    Vector3 hp = G.trGetPosition[head]();
+    std::vector<PendingItem> list;
+    for (int i = 0; i < 27; ++i) {
+        float a = (float)i * 6.2831853f / 27.0f;
+        list.push_back({hp + Vector3(cosf(a) * 2.0f, 0.25f + (i % 3) * 0.35f, sinf(a) * 2.0f), Vector3(0, 0, 0)});
+    }
+    QueueItems(list);
+}
+static void SpawnItemRain() {
+    if (!LeftHandItem()) return;
+    Il2CppObject *head = g_head.get(); if (!head) return;
+    Vector3 hp = G.trGetPosition[head]();
+    std::vector<PendingItem> list;
+    for (int i = 0; i < 27; ++i) {
+        float x = (Rand01() - 0.5f) * 5.0f, z = (Rand01() - 0.5f) * 5.0f;
+        list.push_back({hp + Vector3(x, 3.0f + (i % 3) * 0.4f, z), Vector3(0, -2.5f, 0)});
+    }
+    QueueItems(list);
+}
 
 // Spawn On Hand: each right-trigger press (grip open) spawns the item at your hand.
 static bool g_onHandTrigger = false;
@@ -1527,12 +1672,29 @@ static void OnRoomChange() {
     }
     g_boosted = nullptr;
     g_gravityOff = false;
+    if (g_jumpPowerLevel && g_jumpPowerPlayer.get() == g_player.get() && G.maxJumpSpeed.IsValid() && G.jumpMultiplier.IsValid()) {
+        G.maxJumpSpeed[g_jumpPowerPlayer.get()] = g_jumpPowerOldMax;
+        G.jumpMultiplier[g_jumpPowerPlayer.get()] = g_jumpPowerOldMultiplier;
+    }
+    g_jumpPowerLevel = 0; g_jumpPowerPlayer.clear();
     for (Ref *r : {&g_player, &g_rigidbody, &g_leftHand, &g_rightHand, &g_head}) r->clear();
     g_built = false; g_menuShown = false; g_touching = -2; g_haveSpot = false;
 }
 
-static bool g_dashWasDown = false, g_poundWasDown = false;
-static double g_nextDash = 0;
+static bool g_dashWasDown = false, g_poundWasDown = false, g_flingWasDown = false;
+static double g_nextDash = 0, g_nextMegaJump = 0;
+static void ThumbstickFlyTick() {
+    if (!f_thumbstickFly || !G.tryGetVector2.IsValid() || !G.deviceAtNode.IsValid()) return;
+    XRDevice left = G.deviceAtNode(4), right = G.deviceAtNode(5);
+    BNM::Structures::Unity::Vector2 la(0, 0), ra(0, 0);
+    if (left.initialized) G.tryGetVector2(left.id, (BNM::Structures::Mono::String *)G.usageAxis.get(), &la);
+    if (right.initialized) G.tryGetVector2(right.id, (BNM::Structures::Mono::String *)G.usageAxis.get(), &ra);
+    Il2CppObject *head = g_head.get(), *player = g_player.get();
+    if (!head) return;
+    Vector3 f = Flat(G.trGetForward[head]()), r = Cross(Vector3(0, 1, 0), f);
+    SetVel(f * (la.y * 10.0f) + r * (la.x * 10.0f) + Vector3(0, ra.y * 10.0f, 0));
+    if (player && G.plNoGravityFor.IsValid()) G.plNoGravityFor[player](0.1f);
+}
 static void MovementExtrasTick(const Buttons &in) {
     Il2CppObject *head = g_head.get(), *hand = g_rightHand.get(); if (!head) return;
     Vector3 v;
@@ -1540,9 +1702,13 @@ static void MovementExtrasTick(const Buttons &in) {
     if (f_superFly && in.a) SetVel(G.trGetForward[head]() * 22.0f);
     if (f_rocketBoots && in.ltrig && in.rtrig && GetVel(v)) SetVel(Vector3(v.x, fmaxf(v.y, 14.0f), v.z));
     bool dashPress = in.x && !g_dashWasDown, poundPress = in.b && !g_poundWasDown;
-    g_dashWasDown = in.x; g_poundWasDown = in.b;
+    bool flingPress = in.a && !g_flingWasDown;
+    g_dashWasDown = in.x; g_poundWasDown = in.b; g_flingWasDown = in.a;
     if (f_dash && dashPress && g_time >= g_nextDash) { Vector3 f = Flat(G.trGetForward[head]()); SetVel(f * 18.0f + Vector3(0, 3.0f, 0)); g_nextDash = g_time + 0.65; }
-    if (f_groundPound && poundPress && !g_menuShown && GetVel(v)) SetVel(Vector3(v.x, -18.0f, v.z));
+    if (f_megaJump && poundPress && !g_menuShown && g_time >= g_nextMegaJump && GetVel(v)) {
+        SetVel(Vector3(v.x, 19.0f, v.z)); g_nextMegaJump = g_time + 0.8;
+    } else if (f_groundPound && poundPress && !g_menuShown && GetVel(v)) SetVel(Vector3(v.x, -18.0f, v.z));
+    if (f_flingGun && flingPress && !g_menuShown && hand) SetVel(G.trGetForward[hand]() * 22.0f);
     if (f_grapple && in.lgrip && in.rtrig && hand && G.raycast.IsValid()) {
         Vector3 start = G.trGetPosition[hand](), dir = G.trGetForward[hand]();
         BNM::Structures::Unity::RaycastHit hit{};
@@ -1551,9 +1717,9 @@ static void MovementExtrasTick(const Buttons &in) {
 }
 
 
-// ---- local soundboard -------------------------------------------------------
-// This is local headset playback only. The repository forbids network activity;
-// it does not inject audio into the game's microphone or transmit clips to a lobby.
+// ---- multiplayer soundboard -------------------------------------------------
+// Uses Photon Voice's Recorder audio-clip input. The clip is sent through the
+// local player's existing voice stream; it is not a custom room RPC.
 struct WavInfo { int channels = 0, sampleRate = 0; size_t dataOffset = 0, dataBytes = 0; };
 static uint16_t Read16(const std::vector<uint8_t> &b, size_t p) {
     return (uint16_t)b[p] | ((uint16_t)b[p + 1] << 8);
@@ -1581,55 +1747,179 @@ static bool ParseWav(const std::vector<uint8_t> &b, WavInfo &w) {
     return fmt && data && (w.channels == 1 || w.channels == 2) &&
            w.sampleRate >= 8000 && w.sampleRate <= 48000 && w.dataBytes >= 2;
 }
-static std::string PersistentPath() {
-    if (!G.applicationPersistentPath.IsValid()) return "";
-    auto *v = (Il2CppObject *)G.applicationPersistentPath();
-    if (!v) return "";
-    struct ManagedString { void *klass; void *monitor; int32_t length; char16_t chars[1]; };
-    auto *m = (ManagedString *)v;
-    std::string out;
-    for (int i = 0; i < m->length; ++i) {
-        char16_t c = m->chars[i];
-        if (c > 0x7f) return "";
-        out.push_back((char)c);
+static bool DecodeMp3(const std::string &path, std::vector<float> &pcm, int &channels, int &sampleRate) {
+    int fd = open(path.c_str(), O_RDONLY);
+    if (fd < 0) return false;
+    struct stat st{};
+    if (fstat(fd, &st) != 0 || st.st_size <= 0) { close(fd); return false; }
+    AMediaExtractor *ex = AMediaExtractor_new();
+    AMediaCodec *codec = nullptr;
+    AMediaFormat *trackFormat = nullptr;
+    bool ok = ex && AMediaExtractor_setDataSourceFd(ex, fd, 0, st.st_size) == AMEDIA_OK;
+    close(fd);
+    ssize_t track = -1;
+    if (ok) {
+        size_t tracks = AMediaExtractor_getTrackCount(ex);
+        for (size_t i = 0; i < tracks; ++i) {
+            AMediaFormat *fmt = AMediaExtractor_getTrackFormat(ex, i);
+            const char *mime = nullptr;
+            if (fmt && AMediaFormat_getString(fmt, AMEDIAFORMAT_KEY_MIME, &mime) && mime &&
+                strncmp(mime, "audio/", 6) == 0) { track = (ssize_t)i; trackFormat = fmt; break; }
+            if (fmt) AMediaFormat_delete(fmt);
+        }
+        ok = track >= 0 && trackFormat;
     }
-    return out;
+    const char *mime = nullptr;
+    if (ok) ok = AMediaFormat_getString(trackFormat, AMEDIAFORMAT_KEY_MIME, &mime) && mime;
+    if (ok) { codec = AMediaCodec_createDecoderByType(mime); ok = codec != nullptr; }
+    if (ok) ok = AMediaExtractor_selectTrack(ex, (size_t)track) == AMEDIA_OK;
+    if (ok) ok = AMediaCodec_configure(codec, trackFormat, nullptr, nullptr, 0) == AMEDIA_OK;
+    if (ok) ok = AMediaCodec_start(codec) == AMEDIA_OK;
+    bool inputDone = false, outputDone = false;
+    int32_t outChannels = 0, outRate = 0;
+    size_t sampleCap = 48000u * 2u * 30u;
+    while (ok && !outputDone && pcm.size() < sampleCap) {
+        if (!inputDone) {
+            ssize_t inIndex = AMediaCodec_dequeueInputBuffer(codec, 1000);
+            if (inIndex >= 0) {
+                size_t cap = 0;
+                uint8_t *in = AMediaCodec_getInputBuffer(codec, (size_t)inIndex, &cap);
+                ssize_t n = in ? AMediaExtractor_readSampleData(ex, in, cap) : -1;
+                if (n < 0) {
+                    AMediaCodec_queueInputBuffer(codec, (size_t)inIndex, 0, 0, 0, AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM);
+                    inputDone = true;
+                } else {
+                    int64_t pts = AMediaExtractor_getSampleTime(ex);
+                    AMediaCodec_queueInputBuffer(codec, (size_t)inIndex, 0, (size_t)n, pts < 0 ? 0 : (uint64_t)pts, 0);
+                    AMediaExtractor_advance(ex);
+                }
+            }
+        }
+        AMediaCodecBufferInfo info{};
+        ssize_t outIndex = AMediaCodec_dequeueOutputBuffer(codec, &info, 1000);
+        if (outIndex == AMEDIACODEC_INFO_OUTPUT_FORMAT_CHANGED) {
+            AMediaFormat *fmt = AMediaCodec_getOutputFormat(codec);
+            if (fmt) {
+                AMediaFormat_getInt32(fmt, AMEDIAFORMAT_KEY_CHANNEL_COUNT, &outChannels);
+                AMediaFormat_getInt32(fmt, AMEDIAFORMAT_KEY_SAMPLE_RATE, &outRate);
+                if (outChannels > 0 && outRate > 0) sampleCap = (size_t)outChannels * (size_t)outRate * 30u;
+                AMediaFormat_delete(fmt);
+            }
+        } else if (outIndex >= 0) {
+            size_t cap = 0;
+            uint8_t *out = AMediaCodec_getOutputBuffer(codec, (size_t)outIndex, &cap);
+            if (out && info.size > 0 && info.offset + (size_t)info.size <= cap) {
+                const int16_t *samples = (const int16_t *)(out + info.offset);
+                size_t count = (size_t)info.size / sizeof(int16_t);
+                for (size_t i = 0; i < count && pcm.size() < sampleCap; ++i)
+                    pcm.push_back((float)samples[i] / 32768.0f);
+            }
+            if (info.flags & AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM) outputDone = true;
+            AMediaCodec_releaseOutputBuffer(codec, (size_t)outIndex, false);
+        }
+    }
+    if (pcm.empty() || !outChannels || !outRate || outChannels > 2 || outRate < 8000 || outRate > 48000)
+        ok = false;
+    channels = outChannels; sampleRate = outRate;
+    if (codec) { AMediaCodec_stop(codec); AMediaCodec_delete(codec); }
+    if (trackFormat) AMediaFormat_delete(trackFormat);
+    if (ex) AMediaExtractor_delete(ex);
+    return ok;
+}
+static bool LoadSound(const std::string &path, std::vector<float> &pcm, int &channels, int &sampleRate) {
+    std::string ext = path.substr(path.find_last_of('.') == std::string::npos ? path.size() : path.find_last_of('.'));
+    for (char &c : ext) c = (char)tolower((unsigned char)c);
+    if (ext == ".mp3") return DecodeMp3(path, pcm, channels, sampleRate);
+    std::ifstream in(path, std::ios::binary);
+    std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    WavInfo w;
+    if (!in.good() && bytes.empty()) return false;
+    if (!ParseWav(bytes, w)) return false;
+    size_t frameBytes = (size_t)w.channels * 2;
+    size_t frames = w.dataBytes / frameBytes;
+    if (!frames || frames > (size_t)w.sampleRate * 30) return false;
+    pcm.resize(frames * (size_t)w.channels);
+    for (size_t i = 0; i < pcm.size(); ++i) {
+        int16_t v = (int16_t)Read16(bytes, w.dataOffset + i * 2);
+        pcm[i] = (float)v / 32768.0f;
+    }
+    channels = w.channels; sampleRate = w.sampleRate;
+    return true;
+}
+static std::string ModsSoundPath() {
+    const char *dir = ym::api() ? ym::api()->modsDir : nullptr;
+    return dir && dir[0] ? std::string(dir) + "/sounds" : "";
+}
+static double g_soundEnd = 0, g_soundStarted = 0, g_nextSoundPlay = 0;
+static bool g_soundActive = false, g_soundRemote = false;
+static Ref g_soundRecorder, g_oldRecorderClip;
+static int g_oldSourceType = 0;
+static bool g_oldLoop = false, g_oldVoiceDetection = false, g_oldRecording = false;
+static bool g_haveOldVoiceDetection = false, g_haveOldRecording = false;
+
+static void RestoreVoiceRecorder() {
+    Il2CppObject *rec = g_soundRecorder.get();
+    // Always release our references, even if a game/Photon call throws during restore.
+    try {
+        if (Alive(rec)) {
+            if (G.recorderSetAudioClip.IsValid()) G.recorderSetAudioClip[rec](g_oldRecorderClip.get());
+            if (G.recorderSetLoopAudioClip.IsValid()) G.recorderSetLoopAudioClip[rec](g_oldLoop);
+            if (G.recorderSetSourceType.IsValid()) G.recorderSetSourceType[rec](g_oldSourceType);
+            if (g_haveOldVoiceDetection && G.recorderSetVoiceDetection.IsValid()) G.recorderSetVoiceDetection[rec](g_oldVoiceDetection);
+            if (g_haveOldRecording && G.recorderSetRecording.IsValid()) G.recorderSetRecording[rec](g_oldRecording);
+            if (G.recorderRestart.IsValid()) G.recorderRestart[rec]();
+        }
+    } catch (...) {
+        ym::log("dark-matter: exception while restoring Photon recorder");
+    }
+    g_soundRecorder.clear(); g_oldRecorderClip.clear();
+    g_soundRemote = false;
+    g_haveOldVoiceDetection = g_haveOldRecording = false;
+}
+static void StopSound() {
+    if (g_soundRemote) RestoreVoiceRecorder();
+    try {
+        if (Alive(g_soundSource.get()) && G.audioSourceStop.IsValid()) G.audioSourceStop[g_soundSource.get()]();
+        if (Alive(g_soundSource.get()) && G.audioSourceSetClip.IsValid()) G.audioSourceSetClip[g_soundSource.get()](nullptr);
+    } catch (...) { ym::log("dark-matter: local sound monitor cleanup failed"); }
+    Kill(g_soundClip);
+    g_soundActive = false;
+    g_soundEnd = 0;
+    g_soundStarted = 0;
 }
 static void ScanSounds() {
-    std::string base = PersistentPath();
-    if (base.empty()) { Notify("Soundboard path unavailable"); return; }
-    g_soundDirectory = base + "/sounds";
-    mkdir(g_soundDirectory.c_str(), 0775);
+    g_soundDirectory = ModsSoundPath();
+    if (g_soundDirectory.empty()) { Notify("Mods folder unavailable"); return; }
     g_soundFiles.clear();
+    g_soundItems.clear();
+    g_soundLabels.clear();
+    BuildView();                 // discard old dynamic pointers before returning to the menu
+    g_dirty = true;
     DIR *d = opendir(g_soundDirectory.c_str());
-    if (!d) { Notify("Could not open sounds folder"); return; }
+    if (!d) { Notify("Create mods/sounds folder first"); return; }
     while (dirent *e = readdir(d)) {
         std::string n = e->d_name;
         if (n.size() < 5) continue;
-        std::string ext = n.substr(n.size() - 4);
+        std::string ext = n.substr(n.find_last_of('.'));
         for (char &c : ext) c = (char)tolower((unsigned char)c);
-        if (ext == ".wav") g_soundFiles.push_back(g_soundDirectory + "/" + n);
+        if (ext == ".wav" || ext == ".mp3") g_soundFiles.push_back(g_soundDirectory + "/" + n);
     }
     closedir(d);
     std::sort(g_soundFiles.begin(), g_soundFiles.end());
     g_soundIndex = 0;
-    Notify("Found %d WAV files", (int)g_soundFiles.size());
+    g_soundLabels.reserve(g_soundFiles.size());
+    g_soundItems.reserve(g_soundFiles.size());
+    for (size_t i = 0; i < g_soundFiles.size(); ++i) {
+        const std::string &path = g_soundFiles[i];
+        size_t slash = path.find_last_of('/');
+        g_soundLabels.push_back(std::string("[PLAY] ") + (slash == std::string::npos ? path : path.substr(slash + 1)));
+        g_soundItems.push_back(Item{SOUND, g_soundLabels.back().c_str(), ACTION, MAIN, nullptr, nullptr, (int)i});
+    }
+    g_page = 0;
+    BuildView();                 // rebuild rows after creating the sound-file buttons
+    g_dirty = true;
+    Notify("Found %d sounds. Tap one to play", (int)g_soundFiles.size());
 }
-static void StopSound() {
-    if (Alive(g_soundSource.get()) && G.audioSourceStop.IsValid()) G.audioSourceStop[g_soundSource.get()]();
-    if (Alive(g_soundSource.get()) && G.audioSourceSetClip.IsValid()) G.audioSourceSetClip[g_soundSource.get()](nullptr);
-    Kill(g_soundClip);
-}
-static void SelectSound(int direction) {
-    if (g_soundFiles.empty()) { Notify("No WAV files. Scan sounds folder first"); return; }
-    int n = (int)g_soundFiles.size();
-    g_soundIndex = (size_t)((((int)g_soundIndex + direction) % n + n) % n);
-    const std::string &p = g_soundFiles[g_soundIndex];
-    size_t slash = p.find_last_of('/');
-    Notify("Selected: %s", slash == std::string::npos ? p.c_str() : p.c_str() + slash + 1);
-}
-static void PreviousSound() { SelectSound(-1); }
-static void NextSound() { SelectSound(1); }
 static void SoundVolumeUp() {
     g_soundVolume = fminf(1.0f, g_soundVolume + 0.1f);
     if (Alive(g_soundSource.get())) G.audioSourceSetVolume[g_soundSource.get()](g_soundVolume);
@@ -1640,62 +1930,141 @@ static void SoundVolumeDown() {
     if (Alive(g_soundSource.get())) G.audioSourceSetVolume[g_soundSource.get()](g_soundVolume);
     Notify("Sound volume: %d%%", (int)(g_soundVolume * 100));
 }
+static bool BeginVoicePlayback(Il2CppObject *clip) {
+    if (!G.tRecorder || !G.findAll.IsValid() || !G.recorderGetSourceType.IsValid() ||
+        !G.recorderSetSourceType.IsValid() || !G.recorderSetAudioClip.IsValid() ||
+        !G.recorderSetLoopAudioClip.IsValid() || !G.recorderRestart.IsValid()) return false;
+    if (!G.arrayLength || !G.arrayAddrWithSize) return false;
+    Il2CppObject *arr = G.findAll((Il2CppObject *)G.tRecorder);
+    uintptr_t count = arr ? G.arrayLength(arr) : 0;
+    for (uintptr_t i = 0; i < count; ++i) {
+        auto **slot = (Il2CppObject **)G.arrayAddrWithSize(arr, (int32_t)sizeof(Il2CppObject *), i);
+        if (!slot) return false;
+        Il2CppObject *rec = *slot;
+        if (!Alive(rec)) continue;
+        if (G.recorderGetTransmitEnabled.IsValid() && !G.recorderGetTransmitEnabled[rec]()) continue;
+        if (G.recorderGetRecording.IsValid() && !G.recorderGetRecording[rec]()) continue;
+        g_oldSourceType = G.recorderGetSourceType[rec]();
+        g_oldRecorderClip.set(G.recorderGetAudioClip.IsValid() ? G.recorderGetAudioClip[rec]() : nullptr);
+        g_oldLoop = G.recorderGetLoopAudioClip.IsValid() ? G.recorderGetLoopAudioClip[rec]() : false;
+        g_haveOldVoiceDetection = G.recorderGetVoiceDetection.IsValid() && G.recorderSetVoiceDetection.IsValid();
+        if (g_haveOldVoiceDetection) g_oldVoiceDetection = G.recorderGetVoiceDetection[rec]();
+        g_haveOldRecording = G.recorderGetRecording.IsValid() && G.recorderSetRecording.IsValid();
+        if (g_haveOldRecording) g_oldRecording = G.recorderGetRecording[rec]();
+        g_soundRecorder.set(rec);
+        g_soundRemote = true; // set before mutations so an exception can always restore the mic
+        // Photon Voice InputSourceType.AudioClip is enum value 1.
+        try {
+            G.recorderSetLoopAudioClip[rec](false);
+            if (G.recorderSetVoiceDetection.IsValid()) G.recorderSetVoiceDetection[rec](false);
+            G.recorderSetAudioClip[rec](clip);
+            G.recorderSetSourceType[rec](1);
+            G.recorderRestart[rec]();
+        } catch (...) {
+            RestoreVoiceRecorder();
+            ym::log("dark-matter: voice soundboard setup failed; mic restored");
+            return false;
+        }
+        return true;
+    }
+    return false;
+}
+static bool FillSoundClip(Il2CppObject *clip, const std::vector<float> &pcm) {
+    if (!Alive(clip) || pcm.empty() || !G.arrayNew || !G.arrayAddrWithSize || !G.audioClipSetData.IsValid()) return false;
+    Il2CppObject *managed = (Il2CppObject *)G.arrayNew(
+        Class("System", "Single").GetClass(), (uintptr_t)pcm.size());
+    if (!managed) return false;
+    // Ask IL2CPP for the first float element instead of assuming that array data
+    // starts at a hard-coded byte offset (which differs across runtime builds).
+    float *data = (float *)G.arrayAddrWithSize(managed, (int32_t)sizeof(float), 0);
+    if (!data) return false;
+    memcpy(data, pcm.data(), pcm.size() * sizeof(float));
+    // Populate the entire non-streaming AudioClip before Photon starts reading it.
+    return G.audioClipSetData[clip](managed, 0);
+}
 static void PlaySound() {
+    if (g_soundActive || g_time < g_nextSoundPlay) { Notify("Soundboard is busy"); return; }
     if (g_soundFiles.empty()) ScanSounds();
-    if (g_soundFiles.empty()) return;
-    if (!G.audioClipCreate.IsValid() || !G.audioClipSetData.IsValid() ||
-        !G.tAudioSource || !G.arrayNew || !G.audioSourcePlay.IsValid()) {
+    if (g_soundFiles.empty() || g_soundIndex >= g_soundFiles.size()) return;
+    if (!G.audioClipCreate.IsValid() || !G.audioClipSetData.IsValid() || !G.arrayNew || !G.arrayAddrWithSize) {
         Notify("Unity audio methods unavailable"); return;
     }
-    std::ifstream in(g_soundFiles[g_soundIndex], std::ios::binary);
-    std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-    WavInfo w;
-    if (!in.good() && bytes.empty()) { Notify("Could not read WAV file"); return; }
-    if (!ParseWav(bytes, w)) { Notify("Use PCM 16-bit mono/stereo WAV"); return; }
-    size_t frameBytes = (size_t)w.channels * 2;
-    size_t frames = w.dataBytes / frameBytes;
-    if (!frames || frames > (size_t)w.sampleRate * 30) { Notify("WAV must be 30 seconds or shorter"); return; }
-    size_t count = frames * (size_t)w.channels;
-    std::vector<float> pcm(count);
-    for (size_t i = 0; i < count; ++i) {
-        int16_t v = (int16_t)Read16(bytes, w.dataOffset + i * 2);
-        pcm[i] = (float)v / 32768.0f;
+    std::vector<float> pcm;
+    int channels = 0, sampleRate = 0;
+    const std::string path = g_soundFiles[g_soundIndex];
+    if (!LoadSound(path, pcm, channels, sampleRate) || pcm.empty()) {
+        Notify("Could not decode WAV/MP3 (max 30 sec)"); return;
     }
-    void *managed = G.arrayNew(Class("System", "Single").GetClass(), (uintptr_t)count);
-    if (!managed) { Notify("Could not allocate audio buffer"); return; }
-    memcpy((uint8_t *)managed + 0x20, pcm.data(), count * sizeof(float));
+    if (channels < 1 || channels > 2 || sampleRate < 8000 || sampleRate > 48000 ||
+        pcm.empty() || pcm.size() % (size_t)channels != 0) {
+        Notify("Unsupported or invalid WAV/MP3 audio format"); return;
+    }
+    size_t frames = pcm.size() / (size_t)channels;
+    if (!frames || frames > (size_t)sampleRate * 30) { Notify("Sound must be 30 seconds or shorter"); return; }
+    for (float &v : pcm) v = fmaxf(-1.0f, fminf(1.0f, v * g_soundVolume));
     StopSound();
-    Il2CppObject *clip = G.audioClipCreate(CreateMonoString("DARK MATTER Sound"),
-        (int)frames, w.channels, w.sampleRate, false);
-    if (!clip || !G.audioClipSetData[clip](managed, 0)) {
-        if (clip) G.destroy(clip);
-        Notify("Could not create audio clip"); return;
-    }
+    Il2CppObject *clip = G.audioClipCreate(CreateMonoString("DARK MATTER Sound"), (int)frames, channels, sampleRate, false);
+    if (!clip) { Notify("Could not create audio clip"); return; }
     g_soundClip.set(clip);
-    if (!Alive(g_soundSource.get())) {
-        Il2CppObject *go = Class("UnityEngine", "GameObject").CreateNewObjectParameters(CreateMonoString("DARK MATTER Soundboard"));
-        Il2CppObject *source = go ? G.goAddComponent[go](G.tAudioSource) : nullptr;
-        if (!source) { if (go) G.destroy(go); Kill(g_soundClip); Notify("Could not create audio source"); return; }
-        g_soundSource.set(source);
-        if (g_head.get()) G.trSetParent[Tr(go)](Tr(g_head.get()), false);
-        G.audioSourceSetSpatialBlend[source](0.0f); // 2D, local headset playback
+    if (!FillSoundClip(clip, pcm)) {
+        StopSound();
+        Notify("Could not fill audio clip");
+        return;
     }
-    G.audioSourceSetVolume[g_soundSource.get()](g_soundVolume);
-    G.audioSourceSetClip[g_soundSource.get()](clip);
-    G.audioSourcePlay[g_soundSource.get()]();
-    const std::string &p = g_soundFiles[g_soundIndex];
-    size_t slash = p.find_last_of('/');
-    Notify("Playing: %s", slash == std::string::npos ? p.c_str() : p.c_str() + slash + 1);
+
+    // Switch the active Photon recorder to this complete clip. AudioClip is a supported
+    // Photon Voice source and is transmitted to other players in the current voice room.
+    if (!BeginVoicePlayback(clip)) {
+        StopSound();
+        Notify("Voice chat not ready; join voice and enable your mic");
+        return;
+    }
+
+    // Also monitor the same clip locally so the person pressing the button can hear it.
+    try {
+        if (!Alive(g_soundSource.get())) {
+            Il2CppObject *go = Class("UnityEngine", "GameObject").CreateNewObjectParameters(CreateMonoString("DARK MATTER Sound Monitor"));
+            Il2CppObject *source = go ? G.goAddComponent[go](G.tAudioSource) : nullptr;
+            if (source) {
+                g_soundSource.set(source);
+                if (Alive(g_head.get())) G.trSetParent[Tr(go)](Tr(g_head.get()), false);
+                G.audioSourceSetSpatialBlend[source](0.0f);
+            } else if (go) G.destroy(go);
+        }
+        if (Alive(g_soundSource.get())) {
+            G.audioSourceSetVolume[g_soundSource.get()](g_soundVolume);
+            G.audioSourceSetClip[g_soundSource.get()](clip);
+            G.audioSourcePlay[g_soundSource.get()]();
+        }
+    } catch (...) {
+        ym::log("dark-matter: local monitor unavailable; room stream continues");
+    }
+
+    g_soundActive = true;
+    double duration = (double)frames / (double)sampleRate;
+    g_soundEnd = g_time + duration + 0.2;
+    g_nextSoundPlay = g_time + fmax(1.0, duration);
+    size_t slash = path.find_last_of('/');
+    Notify("Streaming to room + local monitor: %s",
+           slash == std::string::npos ? path.c_str() : path.c_str() + slash + 1);
+}
+static void SoundboardTick() {
+    if (!g_soundActive) return;
+    if (g_time >= g_soundEnd) {
+        StopSound();
+        Notify("Sound finished; microphone restored");
+    }
 }
 
 static void OnUpdate(float dt) {
     g_time += dt;
     g_frames++;
+    SoundboardTick();
     static double fpsStart = 0;
     if (g_time - fpsStart >= 1.0) { g_fps = (float)(g_frames / (g_time - fpsStart)); g_frames = 0; fpsStart = g_time; }
     if (!Lookups()) return;
     auto *player = (Il2CppObject *)ym::api()->localPlayer();
-    if (!player) return;
+    if (!player) { if (g_soundActive) StopSound(); return; }
     if (player != g_player.get()) {                 // first frame in this room
         StopSound();
         g_soundSource.clear();
@@ -1734,6 +2103,7 @@ static void OnUpdate(float dt) {
     try { SpawnOnHandTick(in); ItemQueueTick(); }
     catch (...) { g_itemQueue.clear(); ym::log("dark-matter: item code error"); }
     MovementExtrasTick(in);
+    ThumbstickFlyTick();
     WeatherTick(dt);
     DanceTick(in, dt);              // last: it moves your hands after everything else
 }
