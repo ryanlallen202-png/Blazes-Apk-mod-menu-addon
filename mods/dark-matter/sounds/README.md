@@ -38,7 +38,7 @@ build/test-venv/bin/pip install lameenc==1.9.0
 build/test-venv/bin/python mods/dark-matter/tests/test_soundboard.py
 ```
 
-All ten tests passed in the development sandbox, including runtime-call argument marshalling, GC-handle replacement, exact audio overload selection, recorder ordering, and startup retry guards. They do not run Unity or Photon Voice. Android compilation requires the NDK; room audio and microphone restoration must be tested on a headset with another consenting listener.
+All eleven tests passed in the development sandbox, including runtime-call argument marshalling, GC-handle replacement, exact audio overload selection, recorder ordering, and startup retry guards. They do not run Unity or Photon Voice. Android compilation requires the NDK; room audio and microphone restoration must be tested on a headset with another consenting listener.
 
 ## Playback crash diagnostics
 
@@ -103,3 +103,13 @@ For file playback, `voice stage requested=1` is followed by `voice=0` without re
 Fix 8 logs every unavailable required binding. It accepts the public `IsRecording` property setter as an alternative to separate StartRecording/StopRecording metadata. Saved source/clip/loop state and transmit/recording checks can use known Recorder state fields when public getter invocation is unavailable. Fields are read only; configuration remains through public setters. The microphone's source, clip and loop settings are preserved and restored. Playback still requires voice chat already recording and unmuted; it does not force transmit or bypass other players' mute or distance settings.
 
 The new host test exercises both recording-control variants. Actual voice delivery still needs an on-device test with another listener. If the new checkpoint reports `voice unavailable: ...`, send those specific lines rather than the entire log. Full checkpoints can contain account-related URLs and should not be posted publicly. No uploaded checkpoints are included in the repository.
+
+## Legacy Voice Fix 9: confirmed missing recording-state binding
+
+The revision 8 checkpoint explicitly reports `start=1 stop=1 recordingSetter=0`, `recording=0`, and `voice unavailable: IsRecording`. Local playback completes. This establishes that the recording-state preflight blocks room routing; it does not identify a new playback crash.
+
+Older Photon Voice versions expose `RecordingEnabled`/`recordingEnabled` instead of `IsRecording`/`isRecording`. Fix 9 resolves both API families, preferring live IsRecording state when available. For the legacy API it reads enablement and uses the public RecordingEnabled setter to disable input before changing clip/source configuration and to re-enable afterward. This also avoids legacy configuration setters auto-restarting the recorder while input is only partially configured. The old private StartRecording/StopRecording entry points are used only if neither public recording-control setter is invokable.
+
+Missing state still fails closed: it is never assumed enabled. A false recording-enabled value or muted transmit state still prevents room playback. Legacy enablement is not proof of live transmission; the checkpoint explicitly logs that limitation. The source, prior clip and loop settings are still restored after completion/Stop/room change.
+
+The regression suite now exercises modern, legacy and direct recording-control variants plus live/legacy/missing recording-state reads. The Android build and host tests do not replace testing with another listener. If room audio still fails, send only the new `dark-matter voice` and `dark-matter sound:` lines. Uploaded full checkpoints remain private and are not committed.

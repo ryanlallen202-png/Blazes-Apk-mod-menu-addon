@@ -294,7 +294,7 @@ int main(int argc, char **argv) {
 #include <vector>
 struct Il2CppObject {};
 struct Method { int id; bool available; };
-struct { Method voiceSetIsRecording{1, true}, voiceStartRecording{2, true}, voiceStopRecording{3, true}; } G;
+struct { Method voiceSetIsRecording{1, true}, voiceStartRecording{2, true}, voiceStopRecording{3, true}, voiceSetRecordingEnabled{4, true}; } G;
 static std::vector<int> calls;
 static bool AudioCallable(const Method &method) { return method.available; }
 template<class Result, class... Args>
@@ -316,6 +316,11 @@ int main() {
     G.voiceSetIsRecording.available = false;
     SetVoiceRecording(&recorder, false);
     SetVoiceRecording(&recorder, true);
+    assert((calls == std::vector<int>{4, 20, 4, 10}));
+    calls.clear();
+    G.voiceSetRecordingEnabled.available = false;
+    SetVoiceRecording(&recorder, false);
+    SetVoiceRecording(&recorder, true);
     assert((calls == std::vector<int>{3, 2}));
 }
 '''
@@ -328,6 +333,59 @@ int main() {
         self.assertIn('voice unavailable: %s', source)
         self.assertIn('ReadRecorderValue(G.voiceGetTransmitEnabled, G.voiceTransmitField, recorder)', source)
         self.assertNotIn('set_TransmitEnabled', source)
+
+    def test_legacy_recording_state(self):
+        compiler = shutil.which("c++")
+        if not compiler:
+            self.skipTest("A host C++ compiler is required")
+        source = SOURCE.read_text()
+        start = source.index("static bool VoiceRecordingStateAvailable() {")
+        helper = source[start:source.index("static void SetVoiceRecording(", start)]
+        program = '''#include <cassert>
+#include <stdexcept>
+struct Il2CppObject {};
+struct Accessor {
+    bool available = false, value = false;
+    bool IsValid() const { return available; }
+};
+struct {
+    Accessor voiceGetIsRecording, voiceRecordingField, voiceGetRecordingEnabled, voiceRecordingEnabledField;
+} G;
+static bool AudioCallable(const Accessor &accessor) { return accessor.available; }
+static bool ReadRecorderValue(const Accessor &getter, const Accessor &field, Il2CppObject *) {
+    if (getter.available) return getter.value;
+    if (field.available) return field.value;
+    throw std::runtime_error("state unavailable");
+}
+'''+helper+'''
+int main() {
+    Il2CppObject recorder;
+    assert(!VoiceRecordingStateAvailable());
+    bool caught = false;
+    try { ReadVoiceRecordingState(&recorder); } catch (const std::runtime_error &) { caught = true; }
+    assert(caught);
+    G.voiceGetRecordingEnabled = {true, true};
+    assert(VoiceRecordingStateAvailable() && ReadVoiceRecordingState(&recorder));
+    G.voiceGetRecordingEnabled.value = false;
+    assert(!ReadVoiceRecordingState(&recorder));
+    G.voiceGetRecordingEnabled.available = false;
+    G.voiceRecordingEnabledField = {true, true};
+    assert(ReadVoiceRecordingState(&recorder));
+    G.voiceGetIsRecording = {true, false};
+    assert(!ReadVoiceRecordingState(&recorder)); // live state takes precedence
+    G.voiceGetIsRecording.value = true;
+    assert(ReadVoiceRecordingState(&recorder));
+}
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            cpp = pathlib.Path(directory) / "legacy_state_test.cpp"
+            exe = pathlib.Path(directory) / "legacy_state_test"
+            cpp.write_text(program)
+            subprocess.run([compiler, "-std=c++20", "-Wall", "-Wextra", "-Werror", str(cpp), "-o", str(exe)], check=True)
+            subprocess.run([str(exe)], check=True)
+        self.assertIn('get_RecordingEnabled', source)
+        self.assertIn('set_RecordingEnabled', source)
+        self.assertIn('legacy recorder enabled; live transmission unverified', source)
 
     def test_staged_playback_handoff(self):
         source = SOURCE.read_text()
