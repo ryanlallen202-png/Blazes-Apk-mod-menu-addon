@@ -99,15 +99,6 @@ static struct {
     Method<void> asSetClip, asSetVolume, asSetSpatial, asSetLoop, asPlay, asStop;
     Method<bool> asIsPlaying;
     BNM::MonoType *tAudioSource = nullptr;
-    // Soundboard through voice chat: Photon Voice's Recorder (the thing that sends your mic)
-    BNM::MonoType *tRecorder = nullptr;
-    Method<void> recSetSource, recSetClip, recSetLoop, recSetTransmit, recSetVad, recRestart0, recRestart1,
-                 recSetRecording, recSetOnlyWhenEnabled, recStart;
-    Method<int> recGetSource;
-    Method<bool> recGetTransmit, recGetVad, recGetRecording;
-    Field<int> recFieldSource;                         // the backing fields, set too (some versions read these)
-    Field<Il2CppObject *> recFieldClip;
-    Field<bool> recFieldLoop;
     Method<Il2CppObject *> goFind;
     BNM::IL2CPP::Il2CppClass *floatClass = nullptr;
     BNM::IL2CPP::MethodInfo *rpcCreateItem = nullptr;     // only read for its parameter types
@@ -177,33 +168,6 @@ static bool Lookups() {
             G.asStop = asrc.GetMethod("Stop", 0);
             G.asIsPlaying = asrc.GetMethod("get_isPlaying", 0);
         }
-        Class rec("Photon.Voice.Unity", "Recorder");
-        if (rec.IsValid()) {
-            G.tRecorder = rec.GetMonoType();
-            G.recSetSource = rec.GetMethod("set_SourceType", 1);       // 0 = Microphone, 1 = AudioClip
-            G.recGetSource = rec.GetMethod("get_SourceType", 0);
-            G.recSetClip = rec.GetMethod("set_AudioClip", 1);
-            G.recSetLoop = rec.GetMethod("set_LoopAudioClip", 1);
-            G.recSetTransmit = rec.GetMethod("set_TransmitEnabled", 1);
-            G.recGetTransmit = rec.GetMethod("get_TransmitEnabled", 0);
-            G.recSetVad = rec.GetMethod("set_VoiceDetection", 1);       // off while a song plays, or quiet parts get cut
-            G.recGetVad = rec.GetMethod("get_VoiceDetection", 0);
-            G.recSetRecording = rec.GetMethod("set_IsRecording", 1);
-            G.recGetRecording = rec.GetMethod("get_IsRecording", 0);
-            G.recSetOnlyWhenEnabled = rec.GetMethod("set_RecordOnlyWhenEnabled", 1);
-            G.recStart = rec.GetMethod("StartRecording", 0);
-            G.recFieldSource = rec.GetField("sourceType");
-            G.recFieldClip = rec.GetField("audioClip");
-            G.recFieldLoop = rec.GetField("loopAudioClip");
-            for (auto &m : rec.GetMethods(false)) {                     // RestartRecording() or RestartRecording(bool)
-                auto *mi = m.GetInfo();
-                if (!mi || !mi->name || strcmp(mi->name, "RestartRecording") != 0) continue;
-                if (mi->parameters_count == 0) G.recRestart0 = m;
-                else if (mi->parameters_count == 1) G.recRestart1 = m;
-            }
-        }
-        ym::log("dark-matter: voice recorder=%d source=%d clip=%d restart=%d/%d", G.tRecorder != nullptr, G.recSetSource.IsValid(),
-                G.recSetClip.IsValid(), G.recRestart0.IsValid(), G.recRestart1.IsValid());
     }
     G.goFind = go.GetMethod("Find", 1);
     G.trSetParent = Overload(tr, "SetParent", {"UnityEngine.Transform", "System.Boolean"});
@@ -664,14 +628,14 @@ static const struct { const char *label, *tip; } kTips[] = {
     {"Jumping Jacks", "Arms go up and down at your sides. Hold left trigger."},
     {"Spaz", "Hands shake all over the place. Hold left trigger."},
     {"Beyblade", "Hands spin fast around your waist. Hold left trigger."},
-    {"Soundboard", "Plays .wav songs from the sounds folder, through your voice chat."},
-    {"Others Hear It", "On: the room hears the song through your mic. Off: only you hear it."},
-    {"Next Song", "Picks the next song in the list."},
-    {"Previous Song", "Picks the previous song in the list."},
-    {"Stop Sound", "Stops the song (and cancels a loading one)."},
-    {"Loop", "Repeats the song until you stop it."},
-    {"Sound Volume", "Quiet, medium or loud (for you; others hear it at full)."},
-    {"Rescan Songs", "Looks in the sounds folder again."},
+    {"Soundboard", "Plays local WAV and MP3 files from the DARK MATTER sounds folder."},
+    {"Scan Sounds Folder", "Finds WAV and MP3 files in the DARK MATTER sounds folder."},
+    {"Previous Sound", "Selects the previous local sound."},
+    {"Next Sound", "Selects the next local sound."},
+    {"Play Sound", "Loads and plays the selected sound locally through your headset."},
+    {"Stop Sound", "Stops local sound playback and cancels loading."},
+    {"Volume Up", "Raises local soundboard volume."},
+    {"Volume Down", "Lowers local soundboard volume."},
     {"Effects", "Weather, disco and time of day. Only you see and hear them."},
     {"Morning", "Low sun, soft warm light and a little mist."},
     {"Afternoon", "High sun and a bright blue sky."},
