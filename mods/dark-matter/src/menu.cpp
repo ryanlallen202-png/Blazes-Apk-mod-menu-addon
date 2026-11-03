@@ -894,6 +894,7 @@ static void Press(Item *it) {
     case OPEN:
         g_cat = it->target;
         g_page = 0;
+        if (g_cat == SOUND && g_soundItems.empty()) ScanSounds();
         break;
     case TOGGLE:
         *it->flag = !*it->flag;
@@ -905,7 +906,14 @@ static void Press(Item *it) {
             g_soundIndex = (size_t)it->soundIndex;
             if (g_time < g_nextSoundPlay || g_soundActive)
                 Notify("Soundboard is busy; wait for the clip to finish");
-            else PlaySound();
+            else {
+                try { PlaySound(); }
+                catch (...) {
+                    try { StopSound(); } catch (...) {}
+                    Notify("Soundboard error; microphone restored");
+                    ym::log("dark-matter: soundboard playback exception");
+                }
+            }
         } else if (it->fn) it->fn();
         break;
     }
@@ -2017,8 +2025,15 @@ static void PlaySound() {
 }
 static void SoundboardTick() {
     if (!g_soundActive) return;
-    for (int i = 0; i < 2 && g_soundFramesQueued < g_soundFramesTotal; ++i) {
-        if (!FeedSoundChunk()) { StopSound(); Notify("Sound stream buffer failed; microphone restored"); return; }
+    try {
+        for (int i = 0; i < 2 && g_soundFramesQueued < g_soundFramesTotal; ++i) {
+            if (!FeedSoundChunk()) { StopSound(); Notify("Sound stream buffer failed; microphone restored"); return; }
+        }
+    } catch (...) {
+        try { StopSound(); } catch (...) {}
+        Notify("Sound stream error; microphone restored");
+        ym::log("dark-matter: soundboard stream exception");
+        return;
     }
     if (g_time >= g_soundEnd) { StopSound(); Notify("Sound finished; microphone restored"); return; }
     if (g_soundRemote && Alive(g_soundRecorder.get()) && G.recorderGetTransmitting.IsValid() &&
