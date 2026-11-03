@@ -1907,6 +1907,10 @@ static bool StartVoicePlayback(Il2CppObject *clip, double duration) {
 // ---- soundboard playback -----------------------------------------------------
 // Clips play locally and are also supplied to the game's existing Photon Voice
 // Recorder input when voice chat is active, so room members hear them as voice.
+// Keep decoded PCM and the Unity AudioClip bounded on Quest-class devices. The
+// native PCM buffer and Unity clip coexist during upload, so unbounded files can
+// exhaust memory right as loading completes.
+static constexpr size_t kMaxSoundSamples = 8u * 1024u * 1024u;
 struct WavInfo { int channels = 0, sampleRate = 0; size_t dataOffset = 0, dataBytes = 0; };
 static uint16_t Read16(const std::vector<uint8_t> &b, size_t p) {
     return (uint16_t)b[p] | ((uint16_t)b[p + 1] << 8);
@@ -2037,7 +2041,7 @@ static void PlaySound() {
     if (g_soundFiles.empty()) ScanSounds();
     if (g_soundFiles.empty()) return;
     if (!G.audioClipCreate.IsValid() || !G.audioClipSetData.IsValid() ||
-        !G.tAudioSource || !G.arrayNew || !G.asPlay.IsValid()) {
+        !G.floatClass || !G.tAudioSource || !G.arrayNew) {
         Notify("Unity audio methods unavailable"); return;
     }
     const std::string path = g_soundFiles[g_soundIndex];
@@ -2059,7 +2063,8 @@ static void PlaySound() {
                 rate = (int)mp3.sampleRate;
                 drmp3_uint64 count = drmp3_get_pcm_frame_count(&mp3);
                 if (channels >= 1 && channels <= 2 && rate >= 8000 && rate <= 192000 &&
-                    count > 0 && count <= (drmp3_uint64)INT_MAX) {
+                    count > 0 && count <= (drmp3_uint64)INT_MAX &&
+                    count <= (drmp3_uint64)(kMaxSoundSamples / (size_t)channels)) {
                     frames = (size_t)count;
                     pcm.resize(frames * (size_t)channels);
                     drmp3_uint64 got = drmp3_read_pcm_frames_f32(&mp3, count, pcm.data());
@@ -2075,7 +2080,8 @@ static void PlaySound() {
                 if (ParseWav(bytes, w)) {
                     size_t frameBytes = (size_t)w.channels * 2;
                     frames = w.dataBytes / frameBytes;
-                    if (frames && frames <= (size_t)INT_MAX) {
+                    if (frames && frames <= (size_t)INT_MAX &&
+                        frames <= kMaxSoundSamples / (size_t)w.channels) {
                         channels = w.channels;
                         rate = w.sampleRate;
                         pcm.resize(frames * (size_t)channels);
@@ -2110,7 +2116,7 @@ static void SoundLoadTick() {
     int state = g_soundDecodeState.load();
     if (state == 3) {
         g_soundDecodeState.store(0);
-        Notify("Could not decode sound. Check the format and available memory");
+        Notify("Could not decode sound. Use a shorter/smaller WAV or MP3 file");
         return;
     }
     if (state == 2 && !Alive(g_soundClip.get())) {
@@ -2137,7 +2143,7 @@ static void SoundLoadTick() {
     size_t framesNow = framesLeft < 4096 ? framesLeft : 4096;
     const float *source = g_soundPcm.data() + g_soundLoadOffset * g_soundLoadChannels;
     const size_t samplesNow = framesNow * (size_t)g_soundLoadChannels;
-    Il2CppObject *arr = (Il2CppObject *)G.arrayNew(Class("System", "Single").GetClass(), (uintptr_t)samplesNow);
+    Il2CppObject *arr = (Il2CppObject *)G.arrayNew(G.floatClass, (uintptr_t)samplesNow);
     if (!arr) { StopSound(); Notify("Not enough memory to load sound"); return; }
     memcpy((uint8_t *)arr + 0x20, source, samplesNow * sizeof(float));
     if (!G.audioClipSetData[g_soundClip.get()](arr, (int)(g_soundLoadOffset * g_soundLoadChannels))) {
@@ -2150,8 +2156,7 @@ static void SoundLoadTick() {
         Notify("Loading sound: %d%%", progress);
     }
     if (g_soundLoadOffset >= (size_t)g_soundLoadFrames) {
-        g_soundPcm.clear();
-        g_soundPcm.shrink_to_fit();
+        std::vector<float>().swap(g_soundPcm);
         g_soundDecodeState.store(0);
         const double duration = g_soundDuration;
         const bool voiceSent = StartVoicePlayback(g_soundClip.get(), duration);
@@ -2161,12 +2166,12 @@ static void SoundLoadTick() {
             Il2CppObject *sourceComp = go ? G.goAddComponent[go](G.tAudioSource) : nullptr;
             if (sourceComp) {
                 g_soundSource.set(sourceComp);
-                if (g_head.get()) G.trSetParent[Tr(go)](Tr(g_head.get()), false);
-                G.asSetSpatial[sourceComp](0.0f);
+                if (g_head.get() && G.trSetParent.IsValid()) G.trSetParent[Tr(go)](Tr(g_head.get()), false);
+                if (G.asSetSpatial.IsValid()) G.asSetSpatial[sourceComp](0.0f);
             } else if (go) G.destroy(go);
         }
-        if (Alive(g_soundSource.get())) {
-            G.asSetVolume[g_soundSource.get()](g_soundVolume);
+        if (Alive(g_soundSource.get()) && G.asSetClip.IsValid() && G.asPlay.IsValid()) {
+            if (G.asSetVolume.IsValid()) G.asSetVolume[g_soundSource.get()](g_soundVolume);
             G.asSetClip[g_soundSource.get()](g_soundClip.get());
             G.asPlay[g_soundSource.get()]();
             localStarted = true;
