@@ -1,9 +1,9 @@
 // Yeeps Menu: a C++ port of YeepsMenu.ts (ii's menu style) for the Yeeps BNM mod loader.
 // The .ts original ran under a Frida/Il2Cpp JS runtime that Yeeps' .so loader does not
 // have, so its features are re-implemented here with this repo's SDK, following the
-// starter menu's proven patterns. Only own-game features and read-only info tools are
-// ported (see AGENTS.md); network/room/account/economy features from the .ts are
-// not included.
+// starter menu's proven patterns. Own-game features, read-only tools, bounded
+// own-hand item spawning and rig poses are included (see AGENTS.md).
+// Destructive room, account and economy features from the .ts are not included.
 //   Hold Y (left hand)      -> menu on your left hand, tipped like ii's; turn your palm to you
 //                              (B and the right hand with "Right Hand Menu")
 //   Touch a button with your other index finger to press it
@@ -103,6 +103,22 @@ static struct {
     Method<Vector3> mapPosition;
     Field<float> rollSpeed;
     Method<BNM::Structures::Mono::String *> objectName;
+    Method<Il2CppObject *> netLocal, findScene, findSceneByType;
+    Method<void> pvRpc, sharedHitEffect, setSpectator;
+    BNM::IL2CPP::MethodInfo *rpcCreateItem = nullptr;
+    BNM::IL2CPP::Il2CppClass *objectClass = nullptr, *stringClass = nullptr;
+    BNM::MonoType *tPhotonView = nullptr, *tItem = nullptr;
+    Method<BNM::Structures::Mono::String *> itemKey;
+    Method<bool> itemHeld;
+    void *(*arrayNew)(void *, uintptr_t) = nullptr;
+    void *(*valueBox)(void *, void *) = nullptr;
+    Method<bool> behaviourGetEnabled;
+    Method<void> behaviourSetEnabled;
+    std::vector<BNM::MonoType *> trackerTypes;
+    Field<bool> disableMovement;
+    BNM::MonoType *tTechBubble = nullptr;
+    Field<BNM::Structures::Mono::String *> techPattern;
+
     Ref shader, font, usagePrimary, usageSecondary, usageGrip, usageTrigger;
 } G;
 
@@ -220,6 +236,47 @@ static bool Lookups() {
     if (mapInfo.IsValid()) G.mapPosition = mapInfo.GetMethod("get_placedPosition", 0);
     G.rollSpeed = player.GetField("rollSpeed");
     G.objectName = obj.GetMethod("get_name", 0);
+    Class net("", "NetworkMessenger", Image("Assembly-CSharp.dll"));
+    if (net.IsValid()) {
+        G.netLocal = net.GetMethod("get_local", 0);
+        for (auto &m : net.GetMethods(false))
+            if (m.GetInfo() && m.GetInfo()->name && strcmp(m.GetInfo()->name, "RpcCreateItem") == 0) G.rpcCreateItem = m.GetInfo();
+    }
+    {
+        Class pv("Photon.Pun", "PhotonView");
+        G.tPhotonView = pv.IsValid() ? pv.GetMonoType() : nullptr;
+        if (pv.IsValid()) G.pvRpc = Overload(pv, "RPC", {"System.String", "Photon.Pun.RpcTarget", "System.Object[]"});
+        Class item("", "Item", Image("Assembly-CSharp.dll"));
+        if (item.IsValid()) {
+            G.tItem = item.GetMonoType();
+            G.itemKey = item.GetMethod("get_itemKey", 0);
+            G.itemHeld = item.GetMethod("IsHeldOrAnchoredToAnyPlayer", 0);
+        }
+        G.objectClass = Class("System", "Object").GetClass();
+        G.stringClass = Class("System", "String").GetClass();
+        G.arrayNew = (decltype(G.arrayNew))ym::api()->resolve("il2cpp_array_new");
+        G.valueBox = (decltype(G.valueBox))ym::api()->resolve("il2cpp_value_box");
+        ym::log("yeeps-menu: items rpc=%d pv=%d item=%d box=%d", G.rpcCreateItem != nullptr, G.pvRpc.IsValid(),
+                G.itemKey.IsValid(), G.arrayNew && G.valueBox);
+    }
+    Class behaviour("UnityEngine", "Behaviour");
+    G.behaviourGetEnabled = behaviour.GetMethod("get_enabled", 0);
+    G.behaviourSetEnabled = behaviour.GetMethod("set_enabled", 1);
+    // What moves your hands with the controllers (paused while you dance)
+    for (auto nc : std::vector<std::pair<const char *, const char *>>{
+             {"UnityEngine.XR.Interaction.Toolkit", "XRBaseController"},
+             {"UnityEngine.InputSystem.XR", "TrackedPoseDriver"},
+             {"UnityEngine.SpatialTracking", "TrackedPoseDriver"}}) {
+        Class c(nc.first, nc.second);
+        if (c.IsValid()) G.trackerTypes.push_back(c.GetMonoType());
+    }
+    if (net.IsValid()) G.sharedHitEffect = Overload(net, "SendCreateConfettiEffect", {"UnityEngine.Vector3"});
+    G.setSpectator = Overload(player, "SetIsSpectatorMode", {"System.Boolean"});
+    G.disableMovement = player.GetField("disableMovement");
+    Class bubble("", "TechWebThoughtBubble", Image("Assembly-CSharp.dll"));
+    if (bubble.IsValid()) { G.tTechBubble = bubble.GetMonoType(); G.techPattern = bubble.GetField("patternKey"); }
+    G.findScene = Overload(obj, "FindObjectsOfType", {"System.Type"});
+    G.findSceneByType = Overload(obj, "FindObjectsByType", {"System.Type", "UnityEngine.FindObjectsSortMode"});
     G.tRigidbody = rb.GetMonoType();
     G.tCollider = Class("UnityEngine", "Collider").GetMonoType();
     G.tRenderer = rend.GetMonoType();
@@ -313,11 +370,25 @@ static void ApplyGravity();
 static void LocalHitEffect();
 static void ApplyRoll();
 static bool f_itemInfo, f_mobInfo, f_coordinateGun, f_fastRoll, f_freezeMenu, f_hoverFly, f_objectInfo;
+static bool f_spawnOnHand, f_noTagFreeze, f_techInfo, f_flipGravity, f_spectator;
+static int g_netSends = 0;
+static char g_itemKey[64] = "";
+struct PendingItem { Vector3 pos, vel; };
+static std::vector<PendingItem> g_itemQueue;
+static double g_nextItem = 0, g_nextBatch = 0;
+static constexpr int kDances = 8;
+static bool g_danceSel[kDances];
+static int g_dance = -1;
+static void DancePicked();
+static void ArmDupe9();
+static void ArmDupe27();
+static void SharedHitEffect();
+static void ShowSavedCoordinate();
 static Vector3 g_savedCoordinate{};
 static bool g_hasSavedCoordinate = false;
 
-enum Cat { MAIN, MOVEMENT, SETTINGS, UTILITY, ENABLED, NCAT };
-static const char *kCatName[NCAT] = {"Main", "Movement Mods", "Settings", "Utility Mods", "Enabled Mods"};
+enum Cat { MAIN, MOVEMENT, SETTINGS, UTILITY, RIG, ITEMS, ENABLED, NCAT };
+static const char *kCatName[NCAT] = {"Main", "Movement Mods", "Settings", "Utility Mods", "Rig Mods", "Item Spawners", "Enabled Mods"};
 enum Kind { OPEN, TOGGLE, ACTION };
 struct Item {
     Cat cat;
@@ -332,6 +403,8 @@ static Item g_items[] = {
     {MAIN, "Settings", OPEN, SETTINGS},
     {MAIN, "Movement Mods", OPEN, MOVEMENT},
     {MAIN, "Utility Mods", OPEN, UTILITY},
+    {MAIN, "Rig Mods", OPEN, RIG},
+    {MAIN, "Item Spawners", OPEN, ITEMS},
     {MAIN, "Enabled Mods", OPEN, ENABLED},
 
     {MOVEMENT, "Exit Movement Mods", OPEN, MAIN},
@@ -346,8 +419,28 @@ static Item g_items[] = {
     {MOVEMENT, "No Gravity", TOGGLE, MAIN, &f_noGravity, ApplyGravity},
     {MOVEMENT, "Fast Roll Speed", TOGGLE, MAIN, &f_fastRoll, ApplyRoll},
     {MOVEMENT, "Fly (No gravity)", TOGGLE, MAIN, &f_hoverFly},
+    {MOVEMENT, "Flip Gravity (Own Player)", TOGGLE, MAIN, &f_flipGravity},
+    {MOVEMENT, "No Tag Freeze", TOGGLE, MAIN, &f_noTagFreeze},
     {UTILITY, "Local Hit Effect", ACTION, MAIN, nullptr, LocalHitEffect},
 
+    {RIG, "Exit Rig Mods", OPEN, MAIN},
+    {RIG, "Wave", TOGGLE, MAIN, &g_danceSel[0], DancePicked},
+    {RIG, "Helicopter", TOGGLE, MAIN, &g_danceSel[1], DancePicked},
+    {RIG, "T-Pose", TOGGLE, MAIN, &g_danceSel[2], DancePicked},
+    {RIG, "Windmill", TOGGLE, MAIN, &g_danceSel[3], DancePicked},
+    {RIG, "Swim", TOGGLE, MAIN, &g_danceSel[4], DancePicked},
+    {RIG, "Jumping Jacks", TOGGLE, MAIN, &g_danceSel[5], DancePicked},
+    {RIG, "Spaz", TOGGLE, MAIN, &g_danceSel[6], DancePicked},
+    {RIG, "Beyblade", TOGGLE, MAIN, &g_danceSel[7], DancePicked},
+
+    {ITEMS, "Exit Item Spawners", OPEN, MAIN},
+    {ITEMS, "Spawn Held Balloon", TOGGLE, MAIN, &f_spawnOnHand},
+    {ITEMS, "Duplicate Balloons (3x3)", ACTION, MAIN, nullptr, ArmDupe9},
+    {ITEMS, "Duplicate Balloons (3x3x3)", ACTION, MAIN, nullptr, ArmDupe27},
+    {UTILITY, "Shared Confetti Effect", ACTION, MAIN, nullptr, SharedHitEffect},
+    {UTILITY, "Get Tech Pattern Gun", TOGGLE, MAIN, &f_techInfo},
+    {UTILITY, "Spectator Mode", TOGGLE, MAIN, &f_spectator},
+    {UTILITY, "Show Saved Coordinate", ACTION, MAIN, nullptr, ShowSavedCoordinate},
     {UTILITY, "Exit Utility Mods", OPEN, MAIN},
     {UTILITY, "Get Sign Text Gun", TOGGLE, MAIN, &f_signGun},
     {UTILITY, "Get Map Object Gun", TOGGLE, MAIN, &f_mapGun},
@@ -812,6 +905,8 @@ static void NextIronSpeed() { g_ironSpeed = (g_ironSpeed + 1) % 4; Notify("Iron 
 static void NextTheme() { g_theme = (g_theme + 1) % kThemeCount; Notify("Theme: %s", T().name); }
 static void AllOff() {
     for (auto &it : g_items) if (it.kind == TOGGLE && it.flag != &f_notify) *it.flag = false;   // ticks undo each mod
+    g_dance = -1;
+    g_itemQueue.clear();
     PointerToHand();
     Notify("Everything off");
 }
@@ -856,7 +951,12 @@ static void ApplyRoll() {
 // Own-player only. Freeze wins over movement while the menu is open.
 static bool g_freezeCaptured = false;
 static Vector3 g_freezePosition{};
-static void ExtraMovementTick(const Buttons &in) {
+static void ExtraMovementTick(const Buttons &in, float dt) {
+    if (f_flipGravity && !f_hoverFly && g_player.get() && G.plNoGravityFor.IsValid()) {
+        G.plNoGravityFor[g_player.get()](0.25f);
+        Vector3 v;
+        if (GetVel(v)) SetVel(v + Vector3(0, 9.81f * dt, 0));
+    }
     if (f_hoverFly && g_player.get() && G.plNoGravityFor.IsValid()) {
         G.plNoGravityFor[g_player.get()](0.25f);
         SetVel(in.a && g_rightHand.get() ? G.trGetForward[g_rightHand.get()]() * 20.0f : Vector3(0, 0, 0));
@@ -1056,7 +1156,7 @@ static void ReadMapObject(Il2CppObject *collider) {
 static Ref g_gunLine, g_gunLineGo, g_gunBall;
 static bool g_gunTrigger = false;
 static void TeleportGunTick(const Buttons &in) {
-    bool aiming = (f_tpGun || f_signGun || f_mapGun || f_itemInfo || f_mobInfo || f_coordinateGun || f_objectInfo) && in.rgrip;
+    bool aiming = (f_tpGun || f_signGun || f_mapGun || f_itemInfo || f_mobInfo || f_coordinateGun || f_objectInfo || f_techInfo) && in.rgrip;
     if (!aiming) {
         Show(g_gunLineGo, false);
         Show(g_gunBall, false);
@@ -1099,7 +1199,11 @@ static void TeleportGunTick(const Buttons &in) {
         else if (f_mapGun) ReadMapObject((Il2CppObject *)hit.GetCollider());
         else {
             auto *collider = (Il2CppObject *)hit.GetCollider();
-            if (f_objectInfo) {
+            if (f_techInfo) {
+                auto *bubble = ParentComp(collider, G.tTechBubble);
+                auto *key = bubble && G.techPattern.IsValid() ? G.techPattern[bubble]() : nullptr;
+                Notify("%s", key ? key->str().c_str() : "No tech pattern there");
+            } else if (f_objectInfo) {
                 auto *name = collider && G.objectName.IsValid() ? G.objectName[collider]() : nullptr;
                 auto *t = collider ? G.compTransform[collider]() : nullptr;
                 auto *parent = t && G.trGetParent.IsValid() ? G.trGetParent[t]() : nullptr;
@@ -1123,9 +1227,342 @@ static void TeleportGunTick(const Buttons &in) {
     g_gunTrigger = in.rtrig;
 }
 
+static Vector3 Cross(Vector3 a, Vector3 b) { return Vector3(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x); }
+static Vector3 Flat(Vector3 v) {                      // v without its up/down part, length 1
+    v.y = 0;
+    float l = sqrtf(v.x * v.x + v.z * v.z);
+    return l > 1e-4f ? v * (1.0f / l) : Vector3(0, 0, 1);
+}
+
+// ---- rig mods: dances -----------------------------------------------------------
+// While you hold the left trigger, your hands are moved through a dance instead of
+// following your controllers. The game sends your hand positions to the room as
+// usual, so other players see you dance. Nothing extra is sent.
+
+// The dance buttons work like radio buttons: picking one turns the others off,
+// pressing the picked one again turns dancing off.
+static void DancePicked() {
+    int picked = -1;
+    for (int i = 0; i < kDances; i++) if (g_danceSel[i] && i != g_dance) picked = i;
+    for (int i = 0; i < kDances; i++) g_danceSel[i] = (i == picked);
+    g_dance = picked;
+    if (picked >= 0) Notify("Hold left trigger to dance");
+}
+static float Rand01() { static uint32_t x = 2463534242u; x ^= x << 13; x ^= x >> 17; x ^= x << 5; return (x & 0xffff) / 65535.0f; }
+
+// The controller trackers would put your hands back every frame, so they are paused
+// while you dance (on the hand and the two objects above it) and turned back on after.
+static Ref g_paused[12];
+static int g_pausedN = 0;
+static bool g_dancing = false;
+static void PauseTrackers(bool pause) {
+    if (!pause) {
+        for (int i = 0; i < g_pausedN; i++) {
+            if (Alive(g_paused[i].get())) G.behaviourSetEnabled[g_paused[i].get()](true);
+            g_paused[i].clear();
+        }
+        g_pausedN = 0;
+        return;
+    }
+    if (!G.behaviourSetEnabled.IsValid() || !G.trGetParent.IsValid()) return;
+    for (Il2CppObject *t : {g_leftHand.get(), g_rightHand.get()})
+        for (int up = 0; up < 3 && t; up++, t = G.trGetParent[t]())
+            for (BNM::MonoType *type : G.trackerTypes) {
+                Il2CppObject *go = G.compGameObject[t]();
+                Il2CppObject *c = go ? G.goGetComponent[go]((Il2CppObject *)type) : nullptr;
+                if (!c || !G.behaviourGetEnabled[c]() || g_pausedN >= 12) continue;
+                G.behaviourSetEnabled[c](false);
+                g_paused[g_pausedN++].set(c);
+            }
+}
+
+static void DanceTick(const Buttons &in, float dt) {
+    Il2CppObject *head = g_head.get(), *lh = g_leftHand.get(), *rh = g_rightHand.get();
+    bool want = g_dance >= 0 && g_danceSel[g_dance] && in.ltrig && !g_menuShown && head && lh && rh;
+    if (want != g_dancing) {
+        PauseTrackers(want);
+        g_dancing = want;
+        if (want) ym::log("yeeps-menu: dancing, paused %d trackers", g_pausedN);
+    }
+    if (!want) return;
+    Vector3 hp = G.trGetPosition[head](), f = Flat(G.trGetForward[head]()), up(0, 1, 0);
+    Vector3 r = Cross(up, f);                            // your right
+    Vector3 shoulder = hp + up * -0.25f;
+    float t = (float)g_time, s = sinf(t * 6), c = cosf(t * 6);
+    Vector3 L, R;                                        // hand positions
+    switch (g_dance) {
+    case 0:   // Wave: right hand up and waving, left hand on the hip
+        R = shoulder + r * (0.35f + 0.12f * s) + up * 0.45f + f * 0.1f;
+        L = shoulder + r * -0.25f + up * -0.25f + f * 0.05f;
+        break;
+    case 1:   // Helicopter: both hands spin around you
+        R = shoulder + r * (0.6f * cosf(t * 8)) + f * (0.6f * sinf(t * 8)) + up * 0.15f;
+        L = shoulder - r * (0.6f * cosf(t * 8)) - f * (0.6f * sinf(t * 8)) + up * 0.15f;
+        break;
+    case 2:   // T-Pose
+        R = shoulder + r * 0.7f + up * 0.1f;
+        L = shoulder - r * 0.7f + up * 0.1f;
+        break;
+    case 3:   // Windmill: big circles at your sides
+        R = shoulder + r * 0.4f + up * (0.5f * sinf(-t * 5)) + f * (0.5f * cosf(-t * 5));
+        L = shoulder - r * 0.4f - up * (0.5f * sinf(-t * 5)) - f * (0.5f * cosf(-t * 5));
+        break;
+    case 4: {  // Swim: breaststroke
+        float p = t * 3;
+        R = shoulder + f * (0.3f + 0.25f * cosf(p)) + r * (0.08f + 0.35f * fabsf(sinf(p)));
+        L = shoulder + f * (0.3f + 0.25f * cosf(p)) - r * (0.08f + 0.35f * fabsf(sinf(p)));
+        break;
+    }
+    case 5: {  // Jumping jacks: arms from down by your sides to up over your head
+        float a = (sinf(t * 6) * 0.5f + 0.5f) * 3.1f - 1.55f;
+        R = shoulder + r * (0.6f * cosf(a)) + up * (0.6f * sinf(a));
+        L = shoulder - r * (0.6f * cosf(a)) + up * (0.6f * sinf(a));
+        break;
+    }
+    case 6:   // Spaz: hands in front, shaking everywhere
+        R = shoulder + f * 0.35f + r * 0.2f + Vector3(Rand01() - 0.5f, Rand01() - 0.5f, Rand01() - 0.5f) * 0.3f;
+        L = shoulder + f * 0.35f - r * 0.2f + Vector3(Rand01() - 0.5f, Rand01() - 0.5f, Rand01() - 0.5f) * 0.3f;
+        break;
+    default:  // Beyblade: hands spin fast around your waist
+        R = shoulder - up * 0.3f + r * (0.5f * cosf(t * 20)) + f * (0.5f * sinf(t * 20));
+        L = shoulder - up * 0.3f - r * (0.5f * cosf(t * 20)) - f * (0.5f * sinf(t * 20));
+        break;
+    }
+    // Keep each hand within arm's reach of its shoulder, then glide there instead of
+    // jumping, so the arms move smoothly for you and for everyone watching.
+    auto reach = [&](Vector3 hand, Vector3 sh) {
+        Vector3 d = hand - sh;
+        float len = sqrtf(d.x * d.x + d.y * d.y + d.z * d.z);
+        return len > 0.7f ? sh + d * (0.7f / len) : hand;
+    };
+    R = reach(R, shoulder + r * 0.18f);
+    L = reach(L, shoulder - r * 0.18f);
+    float k = g_dance == 6 ? 1.0f : fminf(1.0f, dt * 14.0f);     // Spaz stays twitchy
+    G.trSetPosition[lh](G.trGetPosition[lh]() + (L - G.trGetPosition[lh]()) * k);
+    G.trSetPosition[rh](G.trGetPosition[rh]() + (R - G.trGetPosition[rh]()) * k);
+    Quaternion look = Quaternion::LookRotation(f, up);
+    G.trSetRotation[lh](look);
+    G.trSetRotation[rh](look);
+}
+
+// ---- items (everyone sees these) ------------------------------------------------
+// Items are made with the game's own item message (RpcCreateItem on the room's
+// NetworkMessenger), the same one the game sends when an item appears. Owner-approved
+// 2026-10-31. Every way of spawning has a cooldown, and big batches are sent a few per
+// frame, so the room can't be flooded.
+
+
+static void Put(Il2CppObject *arr, size_t i, void *v) { ((void **)((uint8_t *)arr + 0x20))[i] = v; }
+
+// Builds RpcCreateItem's arguments from its own parameter list, in the order the game
+// uses: item id, item key, spawn kind 1, no owner, position, rotation, velocity, spin,
+// properties, 1, 1.
+static bool SendItem(const char *key, Vector3 pos, Quaternion rot, Vector3 vel, char *idOut = nullptr) {
+    auto *mi = G.rpcCreateItem;
+    Il2CppObject *nm = G.netLocal.IsValid() ? G.netLocal() : nullptr;
+    if (!mi || !nm || !G.pvRpc.IsValid() || !G.arrayNew || !G.valueBox || !G.tPhotonView) return false;
+    Il2CppObject *go = G.compGameObject[nm]();
+    Il2CppObject *pv = go ? G.goGetComponent[go]((Il2CppObject *)G.tPhotonView) : nullptr;
+    if (!pv) return false;
+    // The last parameter (PhotonMessageInfo) is filled in by Photon on the receiving
+    // side; it is never sent.
+    int count = mi->parameters_count;
+    if (count > 0 && TypeName(mi->parameters[count - 1]) == "Photon.Pun.PhotonMessageInfo") count--;
+    if (count < 1 || count > 32 || !G.objectClass) return false;
+    auto *args = (Il2CppObject *)G.arrayNew(G.objectClass, count);
+    if (!args) return false;
+    char id[8];
+    static const char kChars[] = "abcdefghijklmnopqrstuvwxyz0123456789";
+    for (int i = 0; i < 4; i++) id[i] = kChars[(int)(Rand01() * 35.99f)];
+    id[4] = 0;
+    if (idOut) memcpy(idOut, id, 5);
+    int strings = 0, vectors = 0, others = 0;
+    for (int i = 0; i < count; i++) {
+        std::string tn = TypeName(mi->parameters[i]);
+        Class pc(mi->parameters[i]);
+        auto *k = pc.IsValid() ? pc.GetClass() : nullptr;
+        void *v = nullptr;
+        if (tn == "System.String") {
+            if (strings == 0) v = CreateMonoString(id);
+            else if (strings == 1) v = CreateMonoString(key);
+            strings++;                                   // later strings stay null
+        } else if (tn == "UnityEngine.Vector3") {
+            Vector3 vec = vectors == 0 ? pos : vectors == 1 ? vel : Vector3(0, 0, 0);
+            vectors++;
+            v = G.valueBox(k, &vec);
+        } else if (tn == "UnityEngine.Quaternion") {
+            v = G.valueBox(k, &rot);
+        } else if (tn == "System.String[]") {
+            v = G.arrayNew(G.stringClass, 0);
+        } else if (k && k->byval_arg.valuetype) {
+            uint8_t raw[64] = {};
+            raw[0] = 1;                                 // spawn kind 1 / the two bytes = 1
+            // Photon can't send the game's enum types, only plain numbers (like the kit's
+            // Int32 1), so an enum goes as its underlying number type.
+            auto *boxAs = k->enumtype && k->element_class ? k->element_class : k;
+            v = G.valueBox(boxAs, raw);
+            others++;
+        }
+        Put(args, i, v);
+    }
+    static bool loggedTypes = false;
+    if (!loggedTypes) {                                   // once: what the game expects, for fixing
+        loggedTypes = true;
+        std::string sig;
+        for (int i = 0; i < mi->parameters_count; i++) {
+            Class pc(mi->parameters[i]);
+            auto *k = pc.IsValid() ? pc.GetClass() : nullptr;
+            std::string tn = TypeName(mi->parameters[i]);
+            if (tn.size() > 30) tn = k && k->byval_arg.valuetype ? (k->enumtype ? "enum" : "struct" + std::to_string(k->instance_size - 16)) : "class";
+            sig += (i ? "," : "") + tn;
+        }
+        ym::log("yeeps-menu: item message takes %s", sig.c_str());
+    }
+    try {
+        G.pvRpc[pv](CreateMonoString("RpcCreateItem"), 0, args);      // 0 = everyone in the room
+    } catch (BNM::IL2CPP::Il2CppExceptionWrapper &w) {   // the game said no: log why, don't crash the menu
+        auto *ex = w.ex;
+        auto *msg = ex ? (BNM::Structures::Mono::String *)ex->message : nullptr;
+        auto *cls = ex ? (BNM::Structures::Mono::String *)ex->className : nullptr;
+        ym::log("yeeps-menu: item message error %s: %s", cls ? cls->str().c_str() : "?", msg ? msg->str().c_str() : "?");
+        return false;
+    }
+    return true;
+}
+
+static void QueueItems(const std::vector<PendingItem> &list) {
+    if (!g_itemKey[0] || list.size() > 27 || g_itemQueue.size() + list.size() > 32) return;
+    if (g_time < g_nextBatch) { Notify("Wait a moment"); return; }
+    g_nextBatch = g_time + 3.0;
+    for (auto &p : list) if (g_itemQueue.size() < 32) g_itemQueue.push_back(p);
+}
+
+static void ItemQueueTick() {
+    for (; g_netSends < 2 && !g_itemQueue.empty(); ++g_netSends) {   // 2 a frame at most
+        PendingItem p = g_itemQueue.front();
+        g_itemQueue.erase(g_itemQueue.begin());
+        bool ok = SendItem(g_itemKey, p.pos, Quaternion(0, 0, 0, 1), p.vel);
+        static int logged = 0;
+        if (logged++ < 3) ym::log("yeeps-menu: spawn %s ok=%d", g_itemKey, ok ? 1 : 0);
+        if (!ok) { g_itemQueue.clear(); Notify("Item spawning isn't ready in this room"); }
+    }
+}
+
+// The grid in front of you: 3 across, 3 deep, and 3 high for 3x3x3.
+static void SpawnGrid(int count) {
+    Il2CppObject *head = g_head.get();
+    if (!head) return;
+    Vector3 f = Flat(G.trGetForward[head]()), r = Cross(Vector3(0, 1, 0), f);
+    Vector3 base = G.trGetPosition[head]() + f * 1.2f + Vector3(0, -0.4f, 0);
+    std::vector<PendingItem> list;
+    for (int y = 0; y < (count > 9 ? 3 : 1); y++)
+        for (int z = 0; z < 3; z++)
+            for (int x = 0; x < 3; x++)
+                list.push_back({base + r * ((x - 1) * 0.45f) + f * (z * 0.45f) + Vector3(0, y * 0.45f, 0), Vector3(0, 0, 0)});
+    QueueItems(list);
+}
+// The item you're holding in your LEFT hand right now (owner 2026-10-31: items spawn as
+// whatever is in your left hand when you press). One scene search per press.
+static bool LeftHandItem() {
+    Il2CppObject *hand = g_leftHand.get();
+    if (!g_itemQueue.empty()) { Notify("Wait for the item queue to finish"); return false; }
+    if (!hand || !G.tItem || !G.itemKey.IsValid() || !(G.findScene.IsValid() || G.findSceneByType.IsValid())) return false;
+    auto *arr = (uint8_t *)(G.findScene.IsValid() ? G.findScene((Il2CppObject *)G.tItem)
+                                                  : G.findSceneByType((Il2CppObject *)G.tItem, 0));
+    size_t n = arr ? *(uintptr_t *)(arr + 0x18) : 0;
+    Vector3 hp = G.trGetPosition[hand]();
+    Il2CppObject *best = nullptr;
+    float bestD = 0.4f * 0.4f;
+    for (size_t i = 0; i < n && i < 512; i++) {
+        Il2CppObject *it = ((Il2CppObject **)(arr + 0x20))[i];
+        if (!Alive(it) || (G.itemHeld.IsValid() && !G.itemHeld[it]())) continue;
+        Vector3 d = G.trGetPosition[G.compTransform[it]()]() - hp;
+        float dd = d.x * d.x + d.y * d.y + d.z * d.z;
+        if (dd < bestD) { bestD = dd; best = it; }
+    }
+    auto *key = best ? G.itemKey[best]() : nullptr;
+    if (!key) { Notify("Hold an item in your left hand"); return false; }
+    const std::string selected = key->str();
+    // Conservative allowlist: no weapons, explosives or arbitrary map-object payloads.
+    if (selected != "balloon") { Notify("This spawner currently supports held balloons only"); return false; }
+    snprintf(g_itemKey, sizeof g_itemKey, "%s", selected.c_str());
+    return true;
+}
+static void ArmDupe9() { if (g_time < g_nextBatch) return; if (LeftHandItem()) SpawnGrid(9); else g_nextBatch = g_time + 3.0; }
+static void ArmDupe27() { if (g_time < g_nextBatch) return; if (LeftHandItem()) SpawnGrid(27); else g_nextBatch = g_time + 3.0; }
+
+// Spawn On Hand: each right-trigger press (grip open) spawns the item at your hand.
+static bool g_onHandTrigger = false;
+static void SpawnOnHandTick(const Buttons &in) {
+    bool press = in.rtrig && !g_onHandTrigger;
+    g_onHandTrigger = in.rtrig;
+    Il2CppObject *hand = g_rightHand.get();
+    if (!f_spawnOnHand || !press || in.rgrip || g_menuShown || !hand || g_time < g_nextItem || g_itemQueue.size() >= 32) return;
+    g_nextItem = g_time + 0.3;
+    if (!LeftHandItem()) return;
+    g_itemQueue.push_back({G.trGetPosition[hand]() + G.trGetForward[hand]() * 0.1f, Vector3(0, 0, 0)});
+}
+
+// One press, one own-hand visual effect; never a repeating network tick.
+static double g_nextSharedEffect = 0;
+static void SharedHitEffect() {
+    if (g_time < g_nextSharedEffect || g_netSends >= 2) return;
+    g_nextSharedEffect = g_time + 1.0;
+    auto *net = G.netLocal.IsValid() ? G.netLocal() : nullptr;
+    if (!Alive(net) || !G.sharedHitEffect.IsValid() || !Alive(g_rightHand.get())) {
+        Notify("Shared effect sender unavailable in this build"); return;
+    }
+    ++g_netSends;
+    try { G.sharedHitEffect[net](G.trGetPosition[g_rightHand.get()]()); }
+    catch (...) { Notify("Confetti unavailable in this room"); }
+}
+static void ShowSavedCoordinate() {
+    if (!g_hasSavedCoordinate) { Notify("Save a coordinate first"); return; }
+    Notify("Saved: %.2f, %.2f, %.2f", g_savedCoordinate.x, g_savedCoordinate.y, g_savedCoordinate.z);
+}
+// Local movement state only. Do not touch role, round or account state.
+static Ref g_tagPlayer;
+static bool g_oldDisabledMovement = false;
+static void TagFreezeTick() {
+    auto *player = g_player.get();
+    if (!Alive(player) || !G.disableMovement.IsValid()) return;
+    if (f_noTagFreeze) {
+        if (g_tagPlayer.get() != player) {
+            g_oldDisabledMovement = G.disableMovement[player]();
+            g_tagPlayer.set(player);
+        }
+        G.disableMovement[player] = false;
+    } else if (g_tagPlayer.get()) {
+        if (Alive(g_tagPlayer.get())) G.disableMovement[g_tagPlayer.get()] = g_oldDisabledMovement;
+        g_tagPlayer.clear();
+    }
+}
+static Ref g_spectatorPlayer;
+static bool g_spectatorApplied = false;
+static void SpectatorTick() {
+    auto *player = g_player.get();
+    if (!Alive(player) || !G.setSpectator.IsValid()) return;
+    if (f_spectator && g_spectatorPlayer.get() != player) {
+        G.setSpectator[player](true);
+        g_spectatorPlayer.set(player);
+        g_spectatorApplied = true;
+    } else if (!f_spectator && g_spectatorApplied) {
+        if (Alive(g_spectatorPlayer.get())) G.setSpectator[g_spectatorPlayer.get()](false);
+        g_spectatorPlayer.clear();
+        g_spectatorApplied = false;
+    }
+}
 // ---- callbacks ---------------------------------------------------------------
 
 static void OnRoomChange() {
+    PauseTrackers(false);
+    g_dancing = false;
+    g_itemQueue.clear();
+    g_itemKey[0] = 0;
+    g_onHandTrigger = false;
+    g_tagPlayer.clear();
+    if (g_spectatorApplied && Alive(g_spectatorPlayer.get()) && G.setSpectator.IsValid()) G.setSpectator[g_spectatorPlayer.get()](false);
+    g_spectatorPlayer.clear(); g_spectatorApplied = false;
     Kill(g_localEffect);
     Kill(g_homeButton);
     g_freezeCaptured = false;
@@ -1148,6 +1585,9 @@ static void OnRoomChange() {
 }
 
 static void OnUpdate(float dt) {
+    g_netSends = 0;
+    if (!std::isfinite(dt) || dt < 0) return;
+    dt = fminf(dt, 0.1f);
     g_time += dt;
     g_frames++;
     static double fpsStart = 0;
@@ -1189,12 +1629,28 @@ static void OnUpdate(float dt) {
     ApplyGravity();
     NoclipTick(in);
     TeleportGunTick(in);
-    ExtraMovementTick(in);
+    ExtraMovementTick(in, dt);
+    TagFreezeTick();
+    SpectatorTick();
+    DanceTick(in, dt);
+    SpawnOnHandTick(in);
+    ItemQueueTick();
 }
 
+static bool g_updateFailed = false;
+static void SafeUpdate(float dt) {
+    if (g_updateFailed) return;
+    try { OnUpdate(dt); }
+    catch (...) {
+        g_updateFailed = true;
+        g_itemQueue.clear();
+        try { PauseTrackers(false); } catch (...) {}
+        ym::log("yeeps-menu: update failed; disabled this mod until restart");
+    }
+}
 YM_EXPORT int YeepsMod_Init(const YeepsModApi *api) {
     if (!ym::init(api)) return -1;
-    ym::onUpdate(OnUpdate);
+    ym::onUpdate(SafeUpdate);
     ym::log("Yeeps Menu loaded on %s (%s)", api->gameVersion, api->buildId);
     return 0;
 }
