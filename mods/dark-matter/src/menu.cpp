@@ -728,7 +728,7 @@ static void BuildView() {
     g_view.clear();
     if (g_cat == ENABLED) {
         g_view.push_back(&g_returnItem);
-        for (auto &it : g_items) if (it.kind == TOGGLE && *it.flag && it.flag != &f_notify && it.flag != &f_soundMic) g_view.push_back(&it);
+        for (auto &it : g_items) if (it.kind == TOGGLE && *it.flag && it.flag != &f_notify) g_view.push_back(&it);
     } else {
         for (auto &it : g_items) if (it.cat == g_cat) g_view.push_back(&it);
     }
@@ -1172,7 +1172,7 @@ static int g_ironSpeed = 0;
 static void NextIronSpeed() { g_ironSpeed = (g_ironSpeed + 1) % 4; Notify("Iron Man speed: %d", (int)kIronSpeeds[g_ironSpeed]); }
 static void NextTheme() { g_theme = (g_theme + 1) % kThemeCount; Notify("Theme: %s", T().name); }
 static void AllOff() {
-    for (auto &it : g_items) if (it.kind == TOGGLE && it.flag != &f_notify && it.flag != &f_soundMic) *it.flag = false;   // ticks undo each mod
+    for (auto &it : g_items) if (it.kind == TOGGLE && it.flag != &f_notify) *it.flag = false;   // ticks undo each mod
     g_dance = -1;
     g_dupeArmed = 0;
     g_wx = -1;
@@ -2100,7 +2100,7 @@ static void PlayThunder() {
     }
     Il2CppObject *src = g_wxAudioSrc.get();
     G.asSetClip[src](g_wxClip.get());
-    if (G.asSetVolume.IsValid()) G.asSetVolume[src](kSoundVols[g_soundVol]);
+    if (G.asSetVolume.IsValid()) G.asSetVolume[src](g_soundVolume);
     if (G.asSetSpatial.IsValid()) G.asSetSpatial[src](0.0f);
     if (G.asSetLoop.IsValid()) G.asSetLoop[src](false);
     G.asPlay[src]();
