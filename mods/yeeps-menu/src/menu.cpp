@@ -102,6 +102,7 @@ static struct {
     Method<BNM::Structures::Mono::String *> itemInfoKey, mobInfoKey;
     Method<Vector3> mapPosition;
     Field<float> rollSpeed;
+    Method<BNM::Structures::Mono::String *> objectName;
     Ref shader, font, usagePrimary, usageSecondary, usageGrip, usageTrigger;
 } G;
 
@@ -218,6 +219,7 @@ static bool Lookups() {
     Class mapInfo("", "MapObject", Image("Assembly-CSharp.dll"));
     if (mapInfo.IsValid()) G.mapPosition = mapInfo.GetMethod("get_placedPosition", 0);
     G.rollSpeed = player.GetField("rollSpeed");
+    G.objectName = obj.GetMethod("get_name", 0);
     G.tRigidbody = rb.GetMonoType();
     G.tCollider = Class("UnityEngine", "Collider").GetMonoType();
     G.tRenderer = rend.GetMonoType();
@@ -310,7 +312,7 @@ static void ApplyLongArms();
 static void ApplyGravity();
 static void LocalHitEffect();
 static void ApplyRoll();
-static bool f_itemInfo, f_mobInfo, f_coordinateGun, f_fastRoll;
+static bool f_itemInfo, f_mobInfo, f_coordinateGun, f_fastRoll, f_freezeMenu, f_hoverFly, f_objectInfo;
 static Vector3 g_savedCoordinate{};
 static bool g_hasSavedCoordinate = false;
 
@@ -343,16 +345,19 @@ static Item g_items[] = {
     {MOVEMENT, "Speed Boost", TOGGLE, MAIN, &f_speedBoost, ApplySpeedBoost},
     {MOVEMENT, "No Gravity", TOGGLE, MAIN, &f_noGravity, ApplyGravity},
     {MOVEMENT, "Fast Roll Speed", TOGGLE, MAIN, &f_fastRoll, ApplyRoll},
+    {MOVEMENT, "Fly (No gravity)", TOGGLE, MAIN, &f_hoverFly},
     {UTILITY, "Local Hit Effect", ACTION, MAIN, nullptr, LocalHitEffect},
 
     {UTILITY, "Exit Utility Mods", OPEN, MAIN},
     {UTILITY, "Get Sign Text Gun", TOGGLE, MAIN, &f_signGun},
     {UTILITY, "Get Map Object Gun", TOGGLE, MAIN, &f_mapGun},
+    {UTILITY, "Object Info Gun", TOGGLE, MAIN, &f_objectInfo},
     {UTILITY, "Get Item Gun", TOGGLE, MAIN, &f_itemInfo},
     {UTILITY, "Get Mob Data Gun", TOGGLE, MAIN, &f_mobInfo},
     {UTILITY, "Save Map Coordinate Gun", TOGGLE, MAIN, &f_coordinateGun},
 
     {SETTINGS, "Exit Settings", OPEN, MAIN},
+    {SETTINGS, "Freeze Player in Menu", TOGGLE, MAIN, &f_freezeMenu},
     {SETTINGS, "Change Pointer Position", ACTION, MAIN, nullptr, NextPointer},
     {SETTINGS, "Iron Man Speed", ACTION, MAIN, nullptr, NextIronSpeed},
     {SETTINGS, "Right Hand Menu", TOGGLE, MAIN, &f_rightHand, PointerToHand},
@@ -424,6 +429,7 @@ static const float kBoardW = 0.30f, kBoardH = 0.3825f, kBtnW = 0.27f, kBtnH = 0.
 static const float kTitleY = 0.235f, kSideX = 0.2f, kSideW = 0.06f, kSideH = 0.344f;
 static float RowY(int r) { return 0.13f - r * 0.04f; }
 
+static Ref g_homeButton;
 static Ref g_menu, g_board, g_bg, g_outline, g_pointer, g_title, g_titleBar;
 static Ref g_rowCube[kRows], g_rowLabel[kRows], g_rowText[kRows];
 static Ref g_prev, g_next, g_notifyGo, g_notifyText, g_tipText, g_leftPlatform, g_rightPlatform;
@@ -539,10 +545,12 @@ static void BuildMenu() {
     g_prev.set(Part(bt, T().button, Vector3(-kSideX, 0, 0), Vector3(kSideW, kSideH, 0.009f)));
     // The title sits on its own dark bar above the board (where ii's Disconnect button was)
     g_titleBar.set(Part(bt, T().buttonOn, Vector3(0, kTitleY, -0.002f), Vector3(kBtnW, 0.045f, 0.009f)));
+    g_homeButton.set(Part(bt, T().button, Vector3(0, 0.295f, -0.002f), Vector3(kBtnW, 0.035f, 0.009f)));
     g_next.set(Part(bt, T().button, Vector3(kSideX, 0, 0), Vector3(kSideW, kSideH, 0.009f)));
 
     if (Il2CppObject *canvas = Canvas(bt, Vector3(0, 0, -0.0105f), kBoardW + 2 * kSideX, kBoardH + 0.1f)) {
         Il2CppObject *ct = Tr(canvas);
+        Label(ct, "Home", Vector3(0, 0.295f, 0), kBtnW, 0.035f, 24, nullptr);
         Label(ct, "Yeeps Menu", Vector3(0, kTitleY, 0), kBtnW, 0.045f, 32, &g_title);
         for (int r = 0; r < kRows; r++)
             g_rowLabel[r].set(Label(ct, "", Vector3(0, RowY(r), 0), kBtnW, kBtnH, 19, &g_rowText[r]));
@@ -706,6 +714,7 @@ static int Touching() {
     if (!Alive(board) || !Alive(pointer)) return -2;
     Vector3 p = G.trInverseTransformPoint[Tr(board)](G.trGetPosition[Tr(pointer)]());
     if (p.z < -0.035f || p.z > 0.015f) return -2;
+    if (fabsf(p.x) < kBtnW / 2 && fabsf(p.y - 0.295f) < 0.0175f) return -3;
     if (fabsf(fabsf(p.x) - kSideX) < kSideW / 2 && fabsf(p.y) < kSideH / 2 && PageCount() > 1)
         return p.x < 0 ? -1 : kRows;
     if (fabsf(p.x) >= kBtnW / 2) return -2;
@@ -731,7 +740,9 @@ static void CheckPress() {
         g_nextPress = g_time + 0.25;
         Buzz();
         if (hit >= 0 && hit < kRows) { g_flashRow = hit; g_flashUntil = g_time + 0.12; }
-        if (hit == -1 || hit == kRows) {
+        if (hit == -3) {
+            g_cat = MAIN; g_page = 0; g_dirty = true;
+        } else if (hit == -1 || hit == kRows) {
             int n = PageCount();
             g_page = (g_page + (hit == kRows ? 1 : n - 1)) % n;
             g_dirty = true;
@@ -841,6 +852,22 @@ static void ApplyRoll() {
         if (g_rollPlayer == player) G.rollSpeed[player] = g_oldRoll;
         g_rollPlayer = nullptr;
     }
+}
+// Own-player only. Freeze wins over movement while the menu is open.
+static bool g_freezeCaptured = false;
+static Vector3 g_freezePosition{};
+static void ExtraMovementTick(const Buttons &in) {
+    if (f_hoverFly && g_player.get() && G.plNoGravityFor.IsValid()) {
+        G.plNoGravityFor[g_player.get()](0.25f);
+        SetVel(in.a && g_rightHand.get() ? G.trGetForward[g_rightHand.get()]() * 20.0f : Vector3(0, 0, 0));
+    }
+    auto *t = PlayerTransform();
+    if (f_freezeMenu && g_menuShown && t) {
+        if (!g_freezeCaptured) { g_freezePosition = G.trGetPosition[t](); g_freezeCaptured = true; }
+        G.trSetPosition[t](g_freezePosition);
+        StopMoving();
+        if (g_player.get() && G.plNoGravityFor.IsValid()) G.plNoGravityFor[g_player.get()](0.25f);
+    } else g_freezeCaptured = false;
 }
 static void VelocityFlyTick(const Buttons &in) {
     Il2CppObject *hand = g_rightHand.get();
@@ -1029,7 +1056,7 @@ static void ReadMapObject(Il2CppObject *collider) {
 static Ref g_gunLine, g_gunLineGo, g_gunBall;
 static bool g_gunTrigger = false;
 static void TeleportGunTick(const Buttons &in) {
-    bool aiming = (f_tpGun || f_signGun || f_mapGun || f_itemInfo || f_mobInfo || f_coordinateGun) && in.rgrip;
+    bool aiming = (f_tpGun || f_signGun || f_mapGun || f_itemInfo || f_mobInfo || f_coordinateGun || f_objectInfo) && in.rgrip;
     if (!aiming) {
         Show(g_gunLineGo, false);
         Show(g_gunBall, false);
@@ -1072,7 +1099,13 @@ static void TeleportGunTick(const Buttons &in) {
         else if (f_mapGun) ReadMapObject((Il2CppObject *)hit.GetCollider());
         else {
             auto *collider = (Il2CppObject *)hit.GetCollider();
-            if (f_itemInfo || f_mobInfo) {
+            if (f_objectInfo) {
+                auto *name = collider && G.objectName.IsValid() ? G.objectName[collider]() : nullptr;
+                auto *t = collider ? G.compTransform[collider]() : nullptr;
+                auto *parent = t && G.trGetParent.IsValid() ? G.trGetParent[t]() : nullptr;
+                auto *parentName = parent && G.objectName.IsValid() ? G.objectName[parent]() : nullptr;
+                Notify("%s / parent: %s", name ? name->str().c_str() : "?", parentName ? parentName->str().c_str() : "none");
+            } else if (f_itemInfo || f_mobInfo) {
                 auto *obj = ParentComp(collider, f_itemInfo ? G.tItemInfo : G.tMobInfo);
                 auto method = f_itemInfo ? G.itemInfoKey : G.mobInfoKey;
                 auto *key = obj && method.IsValid() ? method[obj]() : nullptr;
@@ -1094,6 +1127,8 @@ static void TeleportGunTick(const Buttons &in) {
 
 static void OnRoomChange() {
     Kill(g_localEffect);
+    Kill(g_homeButton);
+    g_freezeCaptured = false;
     g_rollPlayer = nullptr;
     g_hasSavedCoordinate = false;
     // The old room's objects are gone (or about to be): forget them, build again.
@@ -1154,6 +1189,7 @@ static void OnUpdate(float dt) {
     ApplyGravity();
     NoclipTick(in);
     TeleportGunTick(in);
+    ExtraMovementTick(in);
 }
 
 YM_EXPORT int YeepsMod_Init(const YeepsModApi *api) {
