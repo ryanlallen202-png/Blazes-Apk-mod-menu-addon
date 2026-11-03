@@ -90,7 +90,7 @@ static struct {
                  lrSetPositionCount, lrSetPosition, lrSetStartWidth, lrSetEndWidth, lrSetUseWorldSpace;
     Method<Quaternion> trGetRotation;
     Method<Vector3> trGetPosition, trGetForward, trGetRight, trGetUp, trInverseTransformPoint, trTransformPoint, rbGetVelocity;
-    Method<bool> alive, tryGetBool, haptic, raycast;
+    Method<bool> alive, tryGetBool, tryGetVector2, haptic, raycast;
     Method<XRDevice> deviceAtNode;
     Method<Il2CppObject *> trGetParent, trGetRoot, getComponentsInChildren, netLocal;
     Method<void> pvRpc;
@@ -127,7 +127,7 @@ static struct {
     Method<void> goSetLayer;
     BNM::MonoType *tRigidbody = nullptr, *tCollider = nullptr, *tCanvas = nullptr, *tText = nullptr,
                   *tFont = nullptr, *tRenderer = nullptr, *tMeshCollider = nullptr, *tLine = nullptr;
-    Ref shader, font, usagePrimary, usageSecondary, usageGrip, usageTrigger;
+    Ref shader, font, usagePrimary, usageSecondary, usageGrip, usageTrigger, usageAxis;
 } G;
 
 static bool Lookups() {
@@ -215,6 +215,8 @@ static bool Lookups() {
     G.rtSetSizeDelta = rt.GetMethod("set_sizeDelta", 1);
     G.deviceAtNode = dev.GetMethod("GetDeviceAtXRNode", 1);
     G.tryGetBool = dev.GetMethod("TryGetFeatureValue_bool", 3);
+    G.tryGetVector2 = dev.GetMethod("TryGetFeatureValue_Vector2f", 3);
+    if (!G.tryGetVector2.IsValid()) G.tryGetVector2 = dev.GetMethod("TryGetFeatureValue_Vector2", 3);
     G.haptic = dev.GetMethod("SendHapticImpulse", 4);    // optional: a small buzz on press
     G.leftHand = player.GetField("leftHandTransform");
     G.rightHand = player.GetField("rightHandTransform");
@@ -304,6 +306,7 @@ static bool Lookups() {
     G.usageSecondary.set((Il2CppObject *)CreateMonoString("SecondaryButton"));
     G.usageGrip.set((Il2CppObject *)CreateMonoString("GripButton"));
     G.usageTrigger.set((Il2CppObject *)CreateMonoString("TriggerButton"));
+    G.usageAxis.set((Il2CppObject *)CreateMonoString("Primary2DAxis"));
     for (const char *s : {"Universal Render Pipeline/Unlit", "Universal Render Pipeline/Lit"})
         if (!G.shader.get() && G.shaderFind.IsValid()) G.shader.set(G.shaderFind((BNM::Structures::Mono::String *)CreateMonoString(s)));
     // Arial, like ii's menu (Unity 6 calls it LegacyRuntime.ttf)
@@ -383,7 +386,7 @@ static bool g_danceSel[kDances];
 static int g_dance = -1;            // the picked dance, -1 = none
 static bool f_fly, f_fastFly, f_platforms, f_lowGravity, f_rainbow, f_fps, f_clock, f_rightHand,
             f_notify = true;
-static bool f_superSpeed, f_superFly, f_rocketBoots, f_dash, f_grapple, f_groundPound;
+static bool f_superSpeed, f_superFly, f_rocketBoots, f_dash, f_grapple, f_groundPound, f_thumbstickFly;
 static bool f_rain, f_snow;
 static Ref g_soundSource, g_soundClip;
 static std::vector<std::string> g_soundFiles;
@@ -403,6 +406,8 @@ static void PointerToHand();
 static void NextPointer();
 static void NextIronSpeed();
 static void NextCarSpeed();
+static void NextJumpPower();
+static void NextMenuSize();
 static void ApplySpeedBoost();
 static void ApplyGravity();
 static void DancePicked();
@@ -462,6 +467,8 @@ static Item g_items[] = {
     {MOVEMENT, "Grapple Hook", TOGGLE, MAIN, &f_grapple},
     {MOVEMENT, "Ground Pound", TOGGLE, MAIN, &f_groundPound},
     {MOVEMENT, "Mega Jump", TOGGLE, MAIN, &f_megaJump},
+    {MOVEMENT, "Thumbstick Fly", TOGGLE, MAIN, &f_thumbstickFly},
+    {MOVEMENT, "Jump Power", ACTION, MAIN, nullptr, NextJumpPower},
     {MOVEMENT, "Fling Gun", TOGGLE, MAIN, &f_flingGun},
 
     {RIG, "Exit Rig Mods", OPEN, MAIN},
@@ -496,6 +503,7 @@ static Item g_items[] = {
     {SETTINGS, "Change Pointer Position", ACTION, MAIN, nullptr, NextPointer},
     {SETTINGS, "Iron Man Speed", ACTION, MAIN, nullptr, NextIronSpeed},
     {SETTINGS, "Car Speed", ACTION, MAIN, nullptr, NextCarSpeed},
+    {SETTINGS, "Menu Size", ACTION, MAIN, nullptr, NextMenuSize},
     {SETTINGS, "Right Hand Menu", TOGGLE, MAIN, &f_rightHand, PointerToHand},
     {SETTINGS, "Change Menu Theme", ACTION, MAIN, nullptr, NextTheme},
     {SETTINGS, "Rainbow Menu", TOGGLE, MAIN, &f_rainbow},
@@ -937,7 +945,8 @@ static void AnimateMenu() {
     float open = (float)(g_time - g_openTime) / 0.15f;     // pop open like ii's menu
     if (open <= 1.05f && Alive(g_menu.get())) {
         float k = open >= 1 ? 1 : 1 - (1 - open) * (1 - open);
-        G.trSetLocalScale[Tr(g_menu.get())](Vector3(k, k, k));
+        float size = k * kMenuSizes[g_menuSizeIndex];
+        G.trSetLocalScale[Tr(g_menu.get())](Vector3(size, size, size));
     }
     if (g_flashRow != -2 && g_time >= g_flashUntil) { g_flashRow = -2; g_dirty = true; }
     float t = 0.5f + 0.5f * sinf((float)g_time * 2.0f);
@@ -994,10 +1003,44 @@ static void GoToSpot() {
     Notify("Teleported to your spot");
 }
 
+static int g_jumpPowerLevel = 0;
+static Il2CppObject *g_jumpPowerPlayer = nullptr;
+static float g_jumpPowerOldMax = 0, g_jumpPowerOldMultiplier = 0;
+static const float kJumpMax[] = {0, 11.0f, 14.0f, 18.0f};
+static const float kJumpMult[] = {0, 1.8f, 2.4f, 3.0f};
+static void NextJumpPower() {
+    Il2CppObject *p = g_player.get();
+    if (!p || !G.maxJumpSpeed.IsValid() || !G.jumpMultiplier.IsValid()) { Notify("Jump settings unavailable"); return; }
+    if (f_speedBoost) { Notify("Turn off Speed Boost first"); return; }
+    if (!g_jumpPowerLevel || g_jumpPowerPlayer != p) {
+        g_jumpPowerOldMax = G.maxJumpSpeed[p]();
+        g_jumpPowerOldMultiplier = G.jumpMultiplier[p]();
+        g_jumpPowerPlayer = p;
+    }
+    g_jumpPowerLevel = (g_jumpPowerLevel + 1) % 4;
+    if (!g_jumpPowerLevel) {
+        G.maxJumpSpeed[p] = g_jumpPowerOldMax;
+        G.jumpMultiplier[p] = g_jumpPowerOldMultiplier;
+        g_jumpPowerPlayer = nullptr;
+        Notify("Jump power: normal");
+    } else {
+        G.maxJumpSpeed[p] = kJumpMax[g_jumpPowerLevel];
+        G.jumpMultiplier[p] = kJumpMult[g_jumpPowerLevel];
+        Notify("Jump power: level %d", g_jumpPowerLevel);
+    }
+}
 static const float kIronSpeeds[] = {15, 12, 8, 4};
 static int g_ironSpeed = 0;
 static void NextIronSpeed() { g_ironSpeed = (g_ironSpeed + 1) % 4; Notify("Iron Man speed: %d", (int)kIronSpeeds[g_ironSpeed]); }
 static void NextTheme() { g_theme = (g_theme + 1) % kThemeCount; Notify("Theme: %s", T().name); }
+static const float kMenuSizes[] = {0.5f, 0.75f, 1.0f, 1.25f, 1.5f};
+static int g_menuSizeIndex = 2;
+static void NextMenuSize() {
+    g_menuSizeIndex = (g_menuSizeIndex + 1) % 5;
+    float size = kMenuSizes[g_menuSizeIndex];
+    if (Alive(g_menu.get())) G.trSetLocalScale[Tr(g_menu.get())](Vector3(size, size, size));
+    Notify("Menu size: %d%%", (int)(size * 100));
+}
 static void AllOff() {
     for (auto &it : g_items) if (it.kind == TOGGLE && it.flag != &f_notify) *it.flag = false;   // ticks undo each mod
     g_dance = -1;
@@ -1601,12 +1644,29 @@ static void OnRoomChange() {
     }
     g_boosted = nullptr;
     g_gravityOff = false;
+    if (g_jumpPowerLevel && g_jumpPowerPlayer == g_player.get() && G.maxJumpSpeed.IsValid() && G.jumpMultiplier.IsValid()) {
+        G.maxJumpSpeed[g_jumpPowerPlayer] = g_jumpPowerOldMax;
+        G.jumpMultiplier[g_jumpPowerPlayer] = g_jumpPowerOldMultiplier;
+    }
+    g_jumpPowerLevel = 0; g_jumpPowerPlayer = nullptr;
     for (Ref *r : {&g_player, &g_rigidbody, &g_leftHand, &g_rightHand, &g_head}) r->clear();
     g_built = false; g_menuShown = false; g_touching = -2; g_haveSpot = false;
 }
 
 static bool g_dashWasDown = false, g_poundWasDown = false, g_flingWasDown = false;
 static double g_nextDash = 0, g_nextMegaJump = 0;
+static void ThumbstickFlyTick() {
+    if (!f_thumbstickFly || !G.tryGetVector2.IsValid() || !G.deviceAtNode.IsValid()) return;
+    XRDevice left = G.deviceAtNode(4), right = G.deviceAtNode(5);
+    BNM::Structures::Unity::Vector2 la(0, 0), ra(0, 0);
+    if (left.initialized) G.tryGetVector2(left.id, (BNM::Structures::Mono::String *)G.usageAxis.get(), &la);
+    if (right.initialized) G.tryGetVector2(right.id, (BNM::Structures::Mono::String *)G.usageAxis.get(), &ra);
+    Il2CppObject *head = g_head.get(), *player = g_player.get();
+    if (!head) return;
+    Vector3 f = Flat(G.trGetForward[head]()), r = Cross(Vector3(0, 1, 0), f);
+    SetVel(f * (la.y * 10.0f) + r * (la.x * 10.0f) + Vector3(0, ra.y * 10.0f, 0));
+    if (player && G.plNoGravityFor.IsValid()) G.plNoGravityFor[player](0.1f);
+}
 static void MovementExtrasTick(const Buttons &in) {
     Il2CppObject *head = g_head.get(), *hand = g_rightHand.get(); if (!head) return;
     Vector3 v;
@@ -1972,6 +2032,7 @@ static void OnUpdate(float dt) {
     try { SpawnOnHandTick(in); ItemQueueTick(); }
     catch (...) { g_itemQueue.clear(); ym::log("dark-matter: item code error"); }
     MovementExtrasTick(in);
+    ThumbstickFlyTick();
     WeatherTick(dt);
     DanceTick(in, dt);              // last: it moves your hands after everything else
 }
