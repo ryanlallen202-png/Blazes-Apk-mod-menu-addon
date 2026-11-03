@@ -8,7 +8,11 @@
 // Movement only changes your own game. Rig mods (dances) and Items are seen by the room,
 // within the limits in AGENTS.md ("Things others see"). Read docs/GUIDE.md before adding.
 #include "ymsdk.hpp"
+#include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <dirent.h>
+#include <fstream>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -102,6 +106,10 @@ static struct {
     Method<int> goGetLayer;
     Method<bool> colliderIsTrigger, behaviourGetEnabledCollider;
     Method<void> ignoreLayers;            // a LayerMask: which layers your hands can climb on
+    Method<Il2CppObject *> audioClipCreate, applicationPersistentPath;
+    Method<bool> audioClipSetData;
+    Method<void> audioSourceSetClip, audioSourcePlay, audioSourceStop, audioSourceSetVolume, audioSourceSetSpatialBlend;
+    BNM::MonoType *tAudioSource = nullptr;
     Method<void> goSetLayer;
     BNM::MonoType *tRigidbody = nullptr, *tCollider = nullptr, *tCanvas = nullptr, *tText = nullptr,
                   *tFont = nullptr, *tRenderer = nullptr, *tMeshCollider = nullptr, *tLine = nullptr;
@@ -118,12 +126,23 @@ static bool Lookups() {
           rb("UnityEngine", "Rigidbody"), mat("UnityEngine", "Material"), rend("UnityEngine", "Renderer"),
           sh("UnityEngine", "Shader"), res("UnityEngine", "Resources"), text("UnityEngine.UI", "Text"),
           graphic("UnityEngine.UI", "Graphic"), canvas("UnityEngine", "Canvas"), rt("UnityEngine", "RectTransform"),
-          dev("UnityEngine.XR", "InputDevices"), player("", "MasterPlayer", Image("Assembly-CSharp.dll"));
+          dev("UnityEngine.XR", "InputDevices"), player("", "MasterPlayer", Image("Assembly-CSharp.dll")),
+          audioClip("UnityEngine", "AudioClip"), audioSource("UnityEngine", "AudioSource"),
+          application("UnityEngine", "Application");
     if (!go || !tr || !player || !dev) { ym::log("dark-matter: game classes missing"); return false; }
     G.createPrimitive = go.GetMethod("CreatePrimitive", 1);
     G.goTransform = go.GetMethod("get_transform", 0);
     G.goGetComponent = Overload(go, "GetComponent", {"System.Type"});
     G.goAddComponent = Overload(go, "AddComponent", {"System.Type"});
+    G.audioClipCreate = audioClip.GetMethod("Create", 5);
+    G.audioClipSetData = audioClip.GetMethod("SetData", 2);
+    G.audioSourceSetClip = audioSource.GetMethod("set_clip", 1);
+    G.audioSourcePlay = audioSource.GetMethod("Play", 0);
+    G.audioSourceStop = audioSource.GetMethod("Stop", 0);
+    G.audioSourceSetVolume = audioSource.GetMethod("set_volume", 1);
+    G.audioSourceSetSpatialBlend = audioSource.GetMethod("set_spatialBlend", 1);
+    G.tAudioSource = audioSource.GetMonoType();
+    G.applicationPersistentPath = application.GetMethod("get_persistentDataPath", 0);
     G.goSetActive = go.GetMethod("SetActive", 1);
     Class comp("UnityEngine", "Component");
     G.compTransform = comp.GetMethod("get_transform", 0);
@@ -333,6 +352,11 @@ static bool f_fly, f_fastFly, f_platforms, f_lowGravity, f_rainbow, f_fps, f_clo
             f_notify = true;
 static bool f_superSpeed, f_superFly, f_rocketBoots, f_dash, f_grapple, f_groundPound;
 static bool f_rain, f_snow;
+static Ref g_soundSource, g_soundClip;
+static std::vector<std::string> g_soundFiles;
+static std::string g_soundDirectory;
+static size_t g_soundIndex = 0;
+static float g_soundVolume = 0.75f;
 static Ref g_player, g_rigidbody, g_leftHand, g_rightHand, g_head;
 static Vector3 g_spot;
 static bool g_haveSpot = false;
@@ -352,9 +376,16 @@ static void DancePicked();
 static void ArmDupe9();
 static void ArmDupe27();
 static bool LeftHandItem();
+static void ScanSounds();
+static void PlaySound();
+static void StopSound();
+static void PreviousSound();
+static void NextSound();
+static void SoundVolumeUp();
+static void SoundVolumeDown();
 
-enum Cat { MAIN, MOVEMENT, RIG, ITEMS, SETTINGS, EFFECTS, ENABLED, NCAT };
-static const char *kCatName[NCAT] = {"Main", "Movement Mods", "Rig Mods", "Items", "Settings", "Effects", "Enabled Mods"};
+enum Cat { MAIN, MOVEMENT, RIG, ITEMS, SETTINGS, EFFECTS, SOUND, ENABLED, NCAT };
+static const char *kCatName[NCAT] = {"Main", "Movement Mods", "Rig Mods", "Items", "Settings", "Effects", "Soundboard", "Enabled Mods"};
 enum Kind { OPEN, TOGGLE, ACTION };
 struct Item {
     Cat cat;
@@ -371,6 +402,7 @@ static Item g_items[] = {
     {MAIN, "Rig Mods", OPEN, RIG},
     {MAIN, "Items", OPEN, ITEMS},
     {MAIN, "Effects", OPEN, EFFECTS},
+    {MAIN, "Soundboard", OPEN, SOUND},
     {MAIN, "Enabled Mods", OPEN, ENABLED},
 
     {MOVEMENT, "Exit Movement Mods", OPEN, MAIN},
@@ -433,6 +465,15 @@ static Item g_items[] = {
     {EFFECTS, "Exit Effects", OPEN, MAIN},
     {EFFECTS, "Rain", TOGGLE, MAIN, &f_rain},
     {EFFECTS, "Snow", TOGGLE, MAIN, &f_snow},
+
+    {SOUND, "Exit Soundboard", OPEN, MAIN},
+    {SOUND, "Scan Sounds Folder", ACTION, MAIN, nullptr, ScanSounds},
+    {SOUND, "Previous Sound", ACTION, MAIN, nullptr, PreviousSound},
+    {SOUND, "Next Sound", ACTION, MAIN, nullptr, NextSound},
+    {SOUND, "Play Sound", ACTION, MAIN, nullptr, PlaySound},
+    {SOUND, "Stop Sound", ACTION, MAIN, nullptr, StopSound},
+    {SOUND, "Volume Up", ACTION, MAIN, nullptr, SoundVolumeUp},
+    {SOUND, "Volume Down", ACTION, MAIN, nullptr, SoundVolumeDown},
 };
 static constexpr int kItems = sizeof(g_items) / sizeof(g_items[0]);
 static Item g_returnItem = {ENABLED, "Exit Enabled Mods", OPEN, MAIN};
@@ -472,6 +513,14 @@ static const struct { const char *label, *tip; } kTips[] = {
     {"Hype", "Hold left trigger for a hype dance."},
     {"Rain", "Local rain effect; only you see it."},
     {"Snow", "Local snow effect; only you see it."},
+    {"Soundboard", "Play local WAV clips from your sounds folder."},
+    {"Scan Sounds Folder", "Find WAV files in the DARK MATTER sounds folder."},
+    {"Previous Sound", "Select the previous WAV clip."},
+    {"Next Sound", "Select the next WAV clip."},
+    {"Play Sound", "Play the selected WAV locally through your headset."},
+    {"Stop Sound", "Stop local sound playback."},
+    {"Volume Up", "Raise local soundboard volume."},
+    {"Volume Down", "Lower local soundboard volume."},
     {"Change Menu Theme", "VOID, NEBULA or ECLIPSE."},
     {"Rainbow Menu", "The menu cycles through colors."},
     {"Show FPS", "Frames per second in the title."},
@@ -1499,6 +1548,144 @@ static void MovementExtrasTick(const Buttons &in) {
     }
 }
 
+
+// ---- local soundboard -------------------------------------------------------
+// This is local headset playback only. The repository forbids network activity;
+// it does not inject audio into the game's microphone or transmit clips to a lobby.
+struct WavInfo { int channels = 0, sampleRate = 0; size_t dataOffset = 0, dataBytes = 0; };
+static uint16_t Read16(const std::vector<uint8_t> &b, size_t p) {
+    return (uint16_t)b[p] | ((uint16_t)b[p + 1] << 8);
+}
+static uint32_t Read32(const std::vector<uint8_t> &b, size_t p) {
+    return (uint32_t)b[p] | ((uint32_t)b[p + 1] << 8) | ((uint32_t)b[p + 2] << 16) | ((uint32_t)b[p + 3] << 24);
+}
+static bool ParseWav(const std::vector<uint8_t> &b, WavInfo &w) {
+    if (b.size() < 44 || memcmp(b.data(), "RIFF", 4) || memcmp(b.data() + 8, "WAVE", 4)) return false;
+    bool fmt = false, data = false;
+    for (size_t p = 12; p + 8 <= b.size();) {
+        uint32_t n = Read32(b, p + 4);
+        size_t body = p + 8;
+        if (body + n > b.size()) return false;
+        if (!memcmp(b.data() + p, "fmt ", 4)) {
+            if (n < 16 || Read16(b, body) != 1 || Read16(b, body + 14) != 16) return false;
+            w.channels = Read16(b, body + 2);
+            w.sampleRate = (int)Read32(b, body + 4);
+            fmt = true;
+        } else if (!memcmp(b.data() + p, "data", 4)) {
+            w.dataOffset = body; w.dataBytes = n; data = true;
+        }
+        p = body + n + (n & 1);
+    }
+    return fmt && data && (w.channels == 1 || w.channels == 2) &&
+           w.sampleRate >= 8000 && w.sampleRate <= 48000 && w.dataBytes >= 2;
+}
+static std::string PersistentPath() {
+    if (!G.applicationPersistentPath.IsValid()) return "";
+    auto *v = (Il2CppObject *)G.applicationPersistentPath();
+    if (!v) return "";
+    struct ManagedString { void *klass; void *monitor; int32_t length; char16_t chars[1]; };
+    auto *m = (ManagedString *)v;
+    std::string out;
+    for (int i = 0; i < m->length; ++i) {
+        char16_t c = m->chars[i];
+        if (c > 0x7f) return "";
+        out.push_back((char)c);
+    }
+    return out;
+}
+static void ScanSounds() {
+    std::string base = PersistentPath();
+    if (base.empty()) { Notify("Soundboard path unavailable"); return; }
+    g_soundDirectory = base + "/sounds";
+    mkdir(g_soundDirectory.c_str(), 0775);
+    g_soundFiles.clear();
+    DIR *d = opendir(g_soundDirectory.c_str());
+    if (!d) { Notify("Could not open sounds folder"); return; }
+    while (dirent *e = readdir(d)) {
+        std::string n = e->d_name;
+        if (n.size() < 5) continue;
+        std::string ext = n.substr(n.size() - 4);
+        for (char &c : ext) c = (char)tolower((unsigned char)c);
+        if (ext == ".wav") g_soundFiles.push_back(g_soundDirectory + "/" + n);
+    }
+    closedir(d);
+    std::sort(g_soundFiles.begin(), g_soundFiles.end());
+    g_soundIndex = 0;
+    Notify("Found %d WAV files", (int)g_soundFiles.size());
+}
+static void StopSound() {
+    if (Alive(g_soundSource.get()) && G.audioSourceStop.IsValid()) G.audioSourceStop[g_soundSource.get()]();
+    if (Alive(g_soundSource.get()) && G.audioSourceSetClip.IsValid()) G.audioSourceSetClip[g_soundSource.get()](nullptr);
+    Kill(g_soundClip);
+}
+static void SelectSound(int direction) {
+    if (g_soundFiles.empty()) { Notify("No WAV files. Scan sounds folder first"); return; }
+    int n = (int)g_soundFiles.size();
+    g_soundIndex = (size_t)((((int)g_soundIndex + direction) % n + n) % n);
+    const std::string &p = g_soundFiles[g_soundIndex];
+    size_t slash = p.find_last_of('/');
+    Notify("Selected: %s", slash == std::string::npos ? p.c_str() : p.c_str() + slash + 1);
+}
+static void PreviousSound() { SelectSound(-1); }
+static void NextSound() { SelectSound(1); }
+static void SoundVolumeUp() {
+    g_soundVolume = fminf(1.0f, g_soundVolume + 0.1f);
+    if (Alive(g_soundSource.get())) G.audioSourceSetVolume[g_soundSource.get()](g_soundVolume);
+    Notify("Sound volume: %d%%", (int)(g_soundVolume * 100));
+}
+static void SoundVolumeDown() {
+    g_soundVolume = fmaxf(0.0f, g_soundVolume - 0.1f);
+    if (Alive(g_soundSource.get())) G.audioSourceSetVolume[g_soundSource.get()](g_soundVolume);
+    Notify("Sound volume: %d%%", (int)(g_soundVolume * 100));
+}
+static void PlaySound() {
+    if (g_soundFiles.empty()) ScanSounds();
+    if (g_soundFiles.empty()) return;
+    if (!G.audioClipCreate.IsValid() || !G.audioClipSetData.IsValid() ||
+        !G.tAudioSource || !G.arrayNew || !G.audioSourcePlay.IsValid()) {
+        Notify("Unity audio methods unavailable"); return;
+    }
+    std::ifstream in(g_soundFiles[g_soundIndex], std::ios::binary);
+    std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    WavInfo w;
+    if (!in.good() && bytes.empty()) { Notify("Could not read WAV file"); return; }
+    if (!ParseWav(bytes, w)) { Notify("Use PCM 16-bit mono/stereo WAV"); return; }
+    size_t frameBytes = (size_t)w.channels * 2;
+    size_t frames = w.dataBytes / frameBytes;
+    if (!frames || frames > (size_t)w.sampleRate * 30) { Notify("WAV must be 30 seconds or shorter"); return; }
+    size_t count = frames * (size_t)w.channels;
+    std::vector<float> pcm(count);
+    for (size_t i = 0; i < count; ++i) {
+        int16_t v = (int16_t)Read16(bytes, w.dataOffset + i * 2);
+        pcm[i] = (float)v / 32768.0f;
+    }
+    void *managed = G.arrayNew(Class("System", "Single").GetClass(), (uintptr_t)count);
+    if (!managed) { Notify("Could not allocate audio buffer"); return; }
+    memcpy((uint8_t *)managed + 0x20, pcm.data(), count * sizeof(float));
+    StopSound();
+    Il2CppObject *clip = G.audioClipCreate(CreateMonoString("DARK MATTER Sound"),
+        (int)frames, w.channels, w.sampleRate, false);
+    if (!clip || !G.audioClipSetData[clip](managed, 0)) {
+        if (clip) G.destroy(clip);
+        Notify("Could not create audio clip"); return;
+    }
+    g_soundClip.set(clip);
+    if (!Alive(g_soundSource.get())) {
+        Il2CppObject *go = Class("UnityEngine", "GameObject").CreateNewObjectParameters(CreateMonoString("DARK MATTER Soundboard"));
+        Il2CppObject *source = go ? G.goAddComponent[go](G.tAudioSource) : nullptr;
+        if (!source) { if (go) G.destroy(go); Kill(g_soundClip); Notify("Could not create audio source"); return; }
+        g_soundSource.set(source);
+        if (g_head.get()) G.trSetParent[Tr(go)](Tr(g_head.get()), false);
+        G.audioSourceSetSpatialBlend[source](0.0f); // 2D, local headset playback
+    }
+    G.audioSourceSetVolume[g_soundSource.get()](g_soundVolume);
+    G.audioSourceSetClip[g_soundSource.get()](clip);
+    G.audioSourcePlay[g_soundSource.get()]();
+    const std::string &p = g_soundFiles[g_soundIndex];
+    size_t slash = p.find_last_of('/');
+    Notify("Playing: %s", slash == std::string::npos ? p.c_str() : p.c_str() + slash + 1);
+}
+
 static void OnUpdate(float dt) {
     g_time += dt;
     g_frames++;
@@ -1508,6 +1695,8 @@ static void OnUpdate(float dt) {
     auto *player = (Il2CppObject *)ym::api()->localPlayer();
     if (!player) return;
     if (player != g_player.get()) {                 // first frame in this room
+        StopSound();
+        g_soundSource.clear();
         OnRoomChange();
         g_player.set(player);
         g_leftHand.set(G.leftHand[player]());
