@@ -3,9 +3,6 @@
 Community mods for **Yeeps (blaze build)**. The game ships only BNM (ByNameModding)
 and a small mod loader; everything else is made by players, here.
 
-**Official download, help and mod requests: https://discord.gg/UfYxE9W9dX**
-Only get the game and mods from the Discord or this repo.
-
 ## Install a mod (players)
 
 1. Have the newest blaze APK from the Discord installed, and start Yeeps once. The
@@ -61,10 +58,6 @@ the room; AGENTS.md has the limits for those.
 AI assistants: open this folder in Codex or Claude Code. They read `AGENTS.md`
 (Claude also reads `CLAUDE.md`), which holds the rules and a full how-to.
 
-**Check your copy isn't edited** before you use it (the AI does this first too):
-`python3 tools/verify_repo.py` compares everything outside `mods/` with this repo on
-GitHub. If it says `EDITED`, download a fresh copy from
-https://github.com/Blazeisodd/Blazes-Apk-mod-menu-addon.
 
 Read before you start:
 - [AGENTS.md](AGENTS.md): what is and isn't allowed
