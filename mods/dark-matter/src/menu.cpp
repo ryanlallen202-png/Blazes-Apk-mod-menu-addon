@@ -38,7 +38,7 @@ using namespace BNM::Structures::Unity;
 using BNM::IL2CPP::Il2CppObject;
 
 YEEPS_MOD("Diddy Client")
-#define DM_VERSION "SoundBoard Port 10"
+#define DM_VERSION "Soundboard Verification 11"
 
 // ---- small helpers ---------------------------------------------------------
 
@@ -156,7 +156,7 @@ static struct {
     Field<Il2CppObject *> voiceConnection;
     Method<Il2CppObject *> voicePrimaryRecorder, voiceGetAudioClip;
     Method<int> voiceGetSourceType;
-    Method<bool> voiceGetTransmitEnabled, voiceGetIsRecording, voiceGetRecordingEnabled, voiceGetLoopAudioClip;
+    Method<bool> voiceGetTransmitEnabled, voiceGetIsRecording, voiceGetRecordingEnabled, voiceGetLoopAudioClip, voiceGetIsCurrentlyTransmitting;
     Method<void> voiceSetSourceType, voiceSetAudioClip, voiceSetLoopAudioClip,
                  voiceStartRecording, voiceStopRecording, voiceSetIsRecording, voiceSetRecordingEnabled;
     Field<int> voiceSourceTypeField;
@@ -255,6 +255,7 @@ static bool Lookups() {
             G.voiceGetTransmitEnabled = recorder.GetMethod("get_TransmitEnabled", 0);
             G.voiceGetIsRecording = recorder.GetMethod("get_IsRecording", 0);
             G.voiceGetRecordingEnabled = Overload(recorder, "get_RecordingEnabled", {});
+            G.voiceGetIsCurrentlyTransmitting = Overload(recorder, "get_IsCurrentlyTransmitting", {});
             G.voiceSetAudioClip = recorder.GetMethod("set_AudioClip", 1);
             G.voiceSetSourceType = recorder.GetMethod("set_SourceType", 1);
             G.voiceSetLoopAudioClip = recorder.GetMethod("set_LoopAudioClip", 1);
@@ -524,8 +525,9 @@ static float g_soundVolume = 0.75f;
 static std::vector<float> g_soundPcm;
 static size_t g_soundLoadOffset = 0;
 static Ref g_voiceRecorder, g_voicePreviousClip;
-static int g_voicePreviousSourceType = 0;
+static int g_voicePreviousSourceType = 0, g_voiceRestoreAttempts = 0;
 static bool g_voicePreviousLoop = true, g_voiceWasRecording = false, g_voiceOverrideActive = false;
+static double g_voiceCheckAt = 0;
 static double g_voiceRestoreAt = 0, g_soundNextAllowed = 0, g_soundDuration = 0.0;
 static std::mutex g_soundMutex;
 static std::atomic<int> g_soundDecodeState{0}; // 0 idle, 1 decoding, 2 decoded, 3 failed
@@ -2012,23 +2014,34 @@ static void SetVoiceRecording(Il2CppObject *recorder, bool recording) {
 
 static void RestoreVoiceInput() {
     if (!g_voiceOverrideActive) return;
-    g_voiceOverrideActive = false;
+    g_voiceCheckAt = 0;
     Il2CppObject *recorder = g_voiceRecorder.get();
     if (Alive(recorder)) {
         try {
             SetVoiceRecording(recorder, false);
+            AudioCall<void>(G.voiceSetSourceType, recorder, g_voicePreviousSourceType);
             AudioCall<void>(G.voiceSetAudioClip, recorder, g_voicePreviousClip.get());
             AudioCall<void>(G.voiceSetLoopAudioClip, recorder, g_voicePreviousLoop);
-            AudioCall<void>(G.voiceSetSourceType, recorder, g_voicePreviousSourceType);
             if (g_voiceWasRecording) SetVoiceRecording(recorder, true);
-        } catch (...) { ym::log("dark-matter: could not restore voice input"); }
+        } catch (...) {
+            ++g_voiceRestoreAttempts;
+            // Retain the snapshot and clip until restoration succeeds. Retry only
+            // three times automatically; a manual Stop may explicitly try again.
+            g_voiceRestoreAt = g_voiceRestoreAttempts < 3 ? g_time + 0.25 : -1;
+            ym::log("dark-matter sound: mic restoration failed attempt=%d; snapshot retained", g_voiceRestoreAttempts);
+            Notify("Mic restore failed; press Stop to retry");
+            return;
+        }
     }
+    g_voiceOverrideActive = false;
     g_voiceRecorder.clear();
     g_voicePreviousClip.clear();
     g_voiceWasRecording = false;
+    g_voiceRestoreAttempts = 0;
     g_voiceRestoreAt = 0;
 }
 static bool StartVoicePlayback(Il2CppObject *clip, double duration) {
+    if (g_voiceOverrideActive) { ym::log("dark-matter sound: previous voice input still active; replacement blocked"); return false; }
     if (!Alive(clip)) return false;
     const bool recordingControl = AudioCallable(G.voiceSetIsRecording) || AudioCallable(G.voiceSetRecordingEnabled) ||
         (AudioCallable(G.voiceStopRecording) && AudioCallable(G.voiceStartRecording));
@@ -2054,11 +2067,22 @@ static bool StartVoicePlayback(Il2CppObject *clip, double duration) {
     if (!Alive(recorder)) { Notify("Voice chat recorder not found"); return false; }
     if (!ReadRecorderValue(G.voiceGetTransmitEnabled, G.voiceTransmitField, recorder)) { Notify("Unmute voice chat to play for the room"); return false; }
     if (!ReadVoiceRecordingState(recorder)) { Notify("Voice chat is not recording"); return false; }
+    // Read the complete snapshot before retaining or changing any recorder state.
+    const int previousSource = ReadRecorderValue(G.voiceGetSourceType, G.voiceSourceTypeField, recorder);
+    auto *previousClip = ReadRecorderValue(G.voiceGetAudioClip, G.voiceClipField, recorder);
+    const bool previousLoop = ReadRecorderValue(G.voiceGetLoopAudioClip, G.voiceLoopField, recorder);
     g_voiceRecorder.set(recorder);
-    g_voicePreviousSourceType = ReadRecorderValue(G.voiceGetSourceType, G.voiceSourceTypeField, recorder);
-    g_voicePreviousClip.set(ReadRecorderValue(G.voiceGetAudioClip, G.voiceClipField, recorder));
-    g_voicePreviousLoop = ReadRecorderValue(G.voiceGetLoopAudioClip, G.voiceLoopField, recorder);
+    g_voicePreviousClip.set(previousClip);
+    if (!g_voiceRecorder.get() || (previousClip && !g_voicePreviousClip.get())) {
+        g_voiceRecorder.clear();
+        g_voicePreviousClip.clear();
+        Notify("Could not retain microphone state");
+        return false;
+    }
+    g_voicePreviousSourceType = previousSource;
+    g_voicePreviousLoop = previousLoop;
     g_voiceWasRecording = true;
+    g_voiceRestoreAttempts = 0;
     g_voiceOverrideActive = true;
     try {
         ym::log("dark-matter sound: stopping recorder before clip input");
@@ -2081,7 +2105,32 @@ static bool StartVoicePlayback(Il2CppObject *clip, double duration) {
     if (!AudioCallable(G.voiceGetIsRecording) && !G.voiceRecordingField.IsValid())
         ym::log("dark-matter sound: legacy recorder enabled; live transmission unverified");
     g_voiceRestoreAt = g_time + (duration > 0.0 ? duration : 0.05);
+    g_voiceCheckAt = g_time + fmin(0.25, (duration > 0.0 ? duration : 0.05) * 0.5);
     return true;
+}
+
+// One observation per user-requested clip; no restart/retry loop or extra sends.
+static void CheckVoiceTransmission() {
+    if (!g_voiceOverrideActive || g_voiceCheckAt <= 0 || g_time < g_voiceCheckAt) return;
+    g_voiceCheckAt = 0;
+    auto *recorder = g_voiceRecorder.get();
+    if (!Alive(recorder)) return;
+    if (!AudioCallable(G.voiceGetIsCurrentlyTransmitting)) {
+        ym::log("dark-matter sound: live transmission accessor unavailable; delivery unverified");
+        return;
+    }
+    try {
+        const bool transmitting = AudioCall<bool>(G.voiceGetIsCurrentlyTransmitting, recorder);
+        ym::log("dark-matter sound: live voice transmitting=%d (receiver audibility unverified)", transmitting);
+        if (transmitting) {
+            Notify("Voice stream sending (check with listener)");
+        } else {
+            const int source = ReadRecorderValue(G.voiceGetSourceType, G.voiceSourceTypeField, recorder);
+            const bool clipMatches = ReadRecorderValue(G.voiceGetAudioClip, G.voiceClipField, recorder) == g_soundClip.get();
+            ym::log("dark-matter sound: inactive voice source=%d clipMatches=%d recording=%d", source, clipMatches, ReadVoiceRecordingState(recorder));
+            Notify(source == 1 && clipMatches ? "No voice activity detected; see checkpoint" : "Game replaced voice input; see checkpoint");
+        }
+    } catch (...) { ym::log("dark-matter sound: transmission check failed; delivery unverified"); }
 }
 
 // ---- soundboard playback -----------------------------------------------------
@@ -2196,7 +2245,9 @@ static void StopSound() {
     if (Alive(g_soundSource.get()) && G.asStop.IsValid()) AudioCall<void>(G.asStop, g_soundSource.get());
     if (Alive(g_soundSource.get()) && G.asSetClip.IsValid()) AudioCall<void>(G.asSetClip, g_soundSource.get(), (Il2CppObject *)nullptr);
     } catch (...) { ym::log("dark-matter sound: source cleanup failed"); }
-    Kill(g_soundClip);
+    if (!g_voiceOverrideActive) Kill(g_soundClip);
+    // A recorder whose restoration failed may still reference this clip. Keep it
+    // rooted and reject replacement playback instead of destroying a live input.
 }
 static void SoundVolumeUp() {
     g_soundVolume = fminf(1.0f, g_soundVolume + 0.1f);
@@ -2211,6 +2262,7 @@ static void SoundVolumeDown() {
 // File I/O and codec work run on a worker thread. Unity objects are only touched
 // later by SoundLoadTick on the game thread, so pressing Play never stalls menu input.
 static void PlaySound() {
+    if (g_voiceOverrideActive && g_voiceRestoreAttempts > 0) { Notify("Restore the mic with Stop before playing"); return; }
     if (g_time < g_soundNextAllowed) { Notify("Wait until the current sound finishes"); return; }
     if (g_soundStartPhase != SoundStartPhase::Idle || g_soundWorkerActive.load() || g_soundDecodeState.load() != 0) { Notify("Sound is already loading"); return; }
     if (g_soundFiles.empty()) ScanSounds();
@@ -2222,9 +2274,10 @@ static void PlaySound() {
     if (g_soundIndex >= g_soundFiles.size()) g_soundIndex = 0;
     const std::string path = g_soundFiles[g_soundIndex];
     ym::log("dark-matter sound: play requested index=%zu", g_soundIndex);
+    StopSound();
+    if (g_voiceOverrideActive) { Notify("Restore the mic with Stop before playing"); return; }
     g_soundPlayingPath = path;
     g_soundRoomPlayback = true;
-    StopSound();
     ym::log("dark-matter sound: previous playback stopped; starting decoder");
     const unsigned job = g_soundGeneration.load();
     g_soundDecodeState.store(1);
@@ -2306,6 +2359,7 @@ static void PlaySound() {
 
 // Runs through the same clip/upload/source path without files, codecs or voice chat.
 static void PlayTestTone() {
+    if (g_voiceOverrideActive && g_voiceRestoreAttempts > 0) { Notify("Restore the mic with Stop before playing"); return; }
     if (g_time < g_soundNextAllowed || g_soundStartPhase != SoundStartPhase::Idle || g_soundWorkerActive.load() || g_soundDecodeState.load() != 0) {
         Notify("Wait until the current sound finishes");
         return;
@@ -2316,6 +2370,7 @@ static void PlayTestTone() {
         return;
     }
     StopSound();
+    if (g_voiceOverrideActive) { Notify("Restore the mic with Stop before playing"); return; }
     constexpr int rate = 48000, frames = rate / 4;
     g_soundPcm.resize(frames);
     for (int i = 0; i < frames; ++i) {
@@ -2377,7 +2432,7 @@ static void SoundStartTick() {
         const std::string &p = g_soundPlayingPath;
         size_t slash = p.find_last_of('/');
         const char *name = slash == std::string::npos ? p.c_str() : p.c_str() + slash + 1;
-        if (voiceSent) Notify("Playing to room: %s", name);
+        if (voiceSent) Notify("Voice input configured: %s", name);
         else if (g_soundLocalStarted) Notify(g_soundRoomPlayback ? "Local only (voice chat unavailable): %s" : "Playing locally: %s", name);
         return;
     }
@@ -2386,7 +2441,8 @@ static void SoundStartTick() {
 }
 
 static void SoundLoadTick() {
-    if (g_voiceOverrideActive && g_time >= g_voiceRestoreAt) RestoreVoiceInput();
+    CheckVoiceTransmission();
+    if (g_voiceOverrideActive && g_voiceRestoreAt > 0 && g_time >= g_voiceRestoreAt) RestoreVoiceInput();
     if (g_soundStartPhase != SoundStartPhase::Idle) { SoundStartTick(); return; }
     int state = g_soundDecodeState.load();
     if (state == 3) {

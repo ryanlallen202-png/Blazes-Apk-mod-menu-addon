@@ -2,6 +2,7 @@
 Run: python3 mods/dark-matter/tests/test_soundboard.py
 """
 import pathlib
+import os
 import shutil
 import struct
 import subprocess
@@ -9,9 +10,30 @@ import tempfile
 import unittest
 
 SOURCE = pathlib.Path(__file__).resolve().parents[1] / "src/menu.cpp"
+NATIVE_FLAGS = (["-fsanitize=address,undefined", "-fno-omit-frame-pointer", "-g"]
+                if os.environ.get("SOUNDBOARD_SANITIZERS") == "1" else [])
 
 
 class SoundboardTests(unittest.TestCase):
+    def test_voice_lifecycle(self):
+        """Execute actual routing/restoration code against a fault-injecting SDK mock."""
+        compiler = shutil.which("c++")
+        if not compiler:
+            self.skipTest("A host C++ compiler is required")
+        source = SOURCE.read_text()
+        start = source.index("template<class T>\nstatic T ReadRecorderValue")
+        implementation = source[start:source.index("// ---- soundboard playback", start)]
+        stage_start = source.index("static void SoundStartTick() {")
+        implementation += source[stage_start:source.index("static void SoundLoadTick() {", stage_start)]
+        harness = pathlib.Path(__file__).with_name("voice_lifecycle_test.cpp")
+        with tempfile.TemporaryDirectory() as directory:
+            tmp = pathlib.Path(directory)
+            (tmp / "voice_under_test.inc").write_text(implementation)
+            exe = tmp / "voice_lifecycle_test"
+            subprocess.run([compiler, "-std=c++20", *NATIVE_FLAGS, "-Wall", "-Wextra", "-Werror",
+                            "-I" + directory, str(harness), "-o", str(exe)], check=True)
+            subprocess.run([str(exe)], check=True)
+
     def test_client_branding(self):
         source = SOURCE.read_text()
         self.assertIn('YEEPS_MOD("Diddy Client")', source)
@@ -53,7 +75,7 @@ class SoundboardTests(unittest.TestCase):
             cpp = pathlib.Path(directory) / "wav_test.cpp"
             exe = pathlib.Path(directory) / "wav_test"
             cpp.write_text(program)
-            subprocess.run([compiler, "-std=c++20", "-Wall", "-Wextra", "-Werror", "-I" + str(SOURCE.parent), str(cpp), "-o", str(exe)], check=True)
+            subprocess.run([compiler, "-std=c++20", *NATIVE_FLAGS, "-Wall", "-Wextra", "-Werror", "-I" + str(SOURCE.parent), str(cpp), "-o", str(exe)], check=True)
             subprocess.run([str(exe)], check=True)
 
     def test_adapted_header_sample_decoding(self):
@@ -90,13 +112,58 @@ class SoundboardTests(unittest.TestCase):
             cpp = pathlib.Path(directory) / "header_decode_test.cpp"
             exe = pathlib.Path(directory) / "header_decode_test"
             cpp.write_text(program)
-            subprocess.run([compiler, "-std=c++20", "-Wall", "-Wextra", "-Werror", "-I" + str(SOURCE.parent), str(cpp), "-o", str(exe)], check=True)
+            subprocess.run([compiler, "-std=c++20", *NATIVE_FLAGS, "-Wall", "-Wextra", "-Werror", "-I" + str(SOURCE.parent), str(cpp), "-o", str(exe)], check=True)
             subprocess.run([str(exe)], check=True)
         source = SOURCE.read_text()
         self.assertIn('diddy::soundboard::kVoiceObjectName', source)
         self.assertIn('persistent + "/HSounds"', source)
         self.assertIn('DecodeWav(bytes, w, pcm, kMaxSoundSamples)', source)
         self.assertNotIn('lobbyHearBoost', source)
+
+    def test_wav_adversarial_inputs(self):
+        compiler = shutil.which("c++")
+        if not compiler:
+            self.skipTest("A host C++ compiler is required")
+        fmt = struct.pack("<HHIIHH", 1, 1, 48000, 96000, 2, 16)
+        body = b"WAVEfmt " + struct.pack("<I", 16) + fmt + b"data" + struct.pack("<I", 8) + bytes(8)
+        baseline = b"RIFF" + struct.pack("<I", len(body)) + body
+        data = ",".join(map(str, baseline))
+        program = '''#include "SoundBoard.h"
+#include <cassert>
+using namespace diddy::soundboard;
+int main() {
+    std::vector<uint8_t> baseline = {'''+data+'''};
+    uint32_t state = 0x467b9183;
+    auto random = [&]() { state ^= state << 13; state ^= state >> 17; state ^= state << 5; return state; };
+    for (int trial = 0; trial < 20000; ++trial) {
+        std::vector<uint8_t> bytes;
+        if (trial % 2) {
+            bytes = baseline;
+            if (trial % 3 == 0) bytes.resize(random() % (baseline.size() + 1));
+            for (unsigned change = 0, count = random() % 8; change < count && !bytes.empty(); ++change)
+                bytes[random() % bytes.size()] = uint8_t(random());
+        } else {
+            bytes.resize(random() % 512);
+            for (auto &byte : bytes) byte = uint8_t(random());
+        }
+        WavInfo info;
+        std::vector<float> samples;
+        if (DecodeWav(bytes, info, samples, 128)) {
+            assert(!samples.empty() && samples.size() <= 128);
+            assert(info.channels == 1 || info.channels == 2);
+            assert(samples.size() % info.channels == 0);
+            for (float sample : samples) assert(std::isfinite(sample) && sample >= -1 && sample <= 1);
+        }
+    }
+}
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            cpp = pathlib.Path(directory) / "wav_adversarial.cpp"
+            exe = pathlib.Path(directory) / "wav_adversarial"
+            cpp.write_text(program)
+            subprocess.run([compiler, "-std=c++20", *NATIVE_FLAGS, "-Wall", "-Wextra", "-Werror",
+                            "-I" + str(SOURCE.parent), str(cpp), "-o", str(exe)], check=True)
+            subprocess.run([str(exe)], check=True)
 
     def test_runtime_audio_marshalling(self):
         compiler = shutil.which("c++")
@@ -188,7 +255,7 @@ int main() {
             cpp = pathlib.Path(directory) / "invoke_test.cpp"
             exe = pathlib.Path(directory) / "invoke_test"
             cpp.write_text(program)
-            subprocess.run([compiler, "-std=c++20", "-Wall", "-Wextra", "-Werror", "-I" + str(SOURCE.parent), str(cpp), "-o", str(exe)], check=True)
+            subprocess.run([compiler, "-std=c++20", *NATIVE_FLAGS, "-Wall", "-Wextra", "-Werror", "-I" + str(SOURCE.parent), str(cpp), "-o", str(exe)], check=True)
             subprocess.run([str(exe)], check=True)
 
     def test_gc_handle_replacement(self):
@@ -236,7 +303,7 @@ int main() {
             cpp = pathlib.Path(directory) / "handle_test.cpp"
             exe = pathlib.Path(directory) / "handle_test"
             cpp.write_text(program)
-            subprocess.run([compiler, "-std=c++20", "-Wall", "-Wextra", "-Werror", "-I" + str(SOURCE.parent), str(cpp), "-o", str(exe)], check=True)
+            subprocess.run([compiler, "-std=c++20", *NATIVE_FLAGS, "-Wall", "-Wextra", "-Werror", "-I" + str(SOURCE.parent), str(cpp), "-o", str(exe)], check=True)
             subprocess.run([str(exe)], check=True)
 
     def test_startup_retries(self):
@@ -262,7 +329,7 @@ int main() {
             (include / "android").mkdir()
             (include / "jni.h").write_text("#pragma once\nstruct JNIEnv; typedef void *jobject;\n")
             (include / "android/log.h").write_text('#pragma once\nextern "C" int __android_log_print(int, const char *, const char *, ...);\n')
-            subprocess.run([compiler, "-std=c++20", "-DNDEBUG", "-D__has_feature(x)=0", "-fsyntax-only",
+            subprocess.run([compiler, "-std=c++20", *NATIVE_FLAGS, "-DNDEBUG", "-D__has_feature(x)=0", "-fsyntax-only",
                             "-I" + directory, "-I" + str(root / "sdk/include"),
                             "-I" + str(root / "sdk/bnm/include"),
                             "-I" + str(root / "sdk/bnm/external/include"), str(SOURCE)], check=True)
@@ -316,7 +383,7 @@ int main(int argc, char **argv) {
             cpp = tmp / "mp3_test.cpp"
             exe = tmp / "mp3_test"
             cpp.write_text(program)
-            subprocess.run([compiler, "-std=c++20", "-I" + str(SOURCE.parent), str(cpp),
+            subprocess.run([compiler, "-std=c++20", *NATIVE_FLAGS, "-I" + str(SOURCE.parent), str(cpp),
                             str(SOURCE.parent / "dr_mp3_impl.cpp"), "-o", str(exe)], check=True)
             subprocess.run([str(exe), *fixtures], check=True)
 
@@ -384,7 +451,7 @@ int main() {
             cpp = pathlib.Path(directory) / "recording_test.cpp"
             exe = pathlib.Path(directory) / "recording_test"
             cpp.write_text(program)
-            subprocess.run([compiler, "-std=c++20", "-Wall", "-Wextra", "-Werror", "-I" + str(SOURCE.parent), str(cpp), "-o", str(exe)], check=True)
+            subprocess.run([compiler, "-std=c++20", *NATIVE_FLAGS, "-Wall", "-Wextra", "-Werror", "-I" + str(SOURCE.parent), str(cpp), "-o", str(exe)], check=True)
             subprocess.run([str(exe)], check=True)
         self.assertIn('voice unavailable: %s', source)
         self.assertIn('ReadRecorderValue(G.voiceGetTransmitEnabled, G.voiceTransmitField, recorder)', source)
@@ -437,7 +504,7 @@ int main() {
             cpp = pathlib.Path(directory) / "legacy_state_test.cpp"
             exe = pathlib.Path(directory) / "legacy_state_test"
             cpp.write_text(program)
-            subprocess.run([compiler, "-std=c++20", "-Wall", "-Wextra", "-Werror", "-I" + str(SOURCE.parent), str(cpp), "-o", str(exe)], check=True)
+            subprocess.run([compiler, "-std=c++20", *NATIVE_FLAGS, "-Wall", "-Wextra", "-Werror", "-I" + str(SOURCE.parent), str(cpp), "-o", str(exe)], check=True)
             subprocess.run([str(exe)], check=True)
         self.assertIn('get_RecordingEnabled', source)
         self.assertIn('set_RecordingEnabled', source)
@@ -470,6 +537,11 @@ int main() {
         stop = source[start:source.index("static void SoundVolumeUp() {", start)]
         self.assertNotIn("g_soundNextAllowed =", stop)
         self.assertIn("++g_soundGeneration", stop)
+        self.assertIn("if (!g_voiceOverrideActive) Kill(g_soundClip)", stop)
+        self.assertIn("g_voiceRestoreAt > 0", source)
+        play = source[source.index("static void PlaySound() {"):source.index("static void PlayTestTone() {")]
+        self.assertLess(play.index("StopSound();"), play.index('if (g_voiceOverrideActive)'))
+        self.assertLess(play.index('if (g_voiceOverrideActive)'), play.index("g_soundDecodeState.store(1)"))
 
 
 if __name__ == "__main__":

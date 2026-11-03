@@ -38,7 +38,7 @@ build/test-venv/bin/pip install lameenc==1.9.0
 build/test-venv/bin/python mods/dark-matter/tests/test_soundboard.py
 ```
 
-All thirteen tests passed in the development sandbox, including runtime-call argument marshalling, GC-handle replacement, exact audio overload selection, recorder ordering, and startup retry guards. They do not run Unity or Photon Voice. Android compilation requires the NDK; room audio and microphone restoration must be tested on a headset with another consenting listener.
+All fifteen tests passed in the development sandbox, including runtime-call argument marshalling, GC-handle replacement, exact audio overload selection, recorder ordering, and startup retry guards. They do not run Unity or Photon Voice. Android compilation requires the NDK; room audio and microphone restoration must be tested on a headset with another consenting listener.
 
 ## Playback crash diagnostics
 
@@ -135,3 +135,13 @@ Ported behavior:
 Existing MP3 decoding, modern/legacy recording APIs, cooldowns, GC roots, staged local playback and saved-input restoration are retained. The header's external-wrapper dependencies, file-request/OGG loader, forced unmute, raw configuration-field writes, per-frame scene searches and local volume/distance booster are not imported. The “Hear All” booster changes local reception, not transmission to other players. This port does not boost voice levels or override mute settings.
 
 Install only the new **diddy-client.so** and confirm **SoundBoard Port 10** in the menu. Room delivery is still unverified until tested with another listener; the source adaptation alone cannot prove it. If it remains local-only, provide new `dark-matter voice` and `dark-matter sound:` checkpoint lines, including the recorder-discovery result.
+
+## Soundboard Verification 11
+
+This pass adds fault-injection tests of the actual voice routing/restoration and post-100% handoff code, plus 20,000 deterministic malformed WAV inputs. The suite can run under AddressSanitizer and UndefinedBehaviorSanitizer; see [the verification report](../tests/VERIFICATION.md) for commands, coverage and headset acceptance checks.
+
+A regression test reproduced a microphone-restoration error that discarded saved input state after a setter failed. Restoration now retains state/clip ownership, makes at most three automatic attempts and supports a manual Stop retry. New playback is blocked until unrecovered state is restored. Snapshot errors and failed GC retention do not mutate the recorder.
+
+A one-shot live check uses the optional `IsCurrentlyTransmitting` getter. The initial message now says **Voice input configured**, not **Playing to room**. It then reports voice activity, no observed activity, an input replaced by the game, or an unavailable accessor in the checkpoint. Even a positive sending flag does not prove another player hears it. No automatic replay or forced transmit is added.
+
+Host and Android builds cannot certify receiver audibility. A second-player headset test remains necessary.
