@@ -119,7 +119,8 @@ static struct {
     Method<void> audioSourceSetClip, audioSourcePlay, audioSourceStop, audioSourceSetVolume, audioSourceSetSpatialBlend;
     BNM::MonoType *tAudioSource = nullptr, *tRecorder = nullptr;
     Method<int> recorderGetSourceType;
-    Method<void> recorderSetSourceType, recorderSetAudioClip, recorderSetLoopAudioClip, recorderRestart;
+    Method<void> recorderSetSourceType, recorderSetAudioClip, recorderSetLoopAudioClip;
+    Method<bool> recorderRestart;
     Method<Il2CppObject *> recorderGetAudioClip;
     Method<bool> recorderGetLoopAudioClip, recorderGetVoiceDetection, recorderGetTransmitEnabled,
                  recorderGetTransmitting, recorderGetRecording;
@@ -1854,21 +1855,29 @@ static bool g_haveOldVoiceDetection = false, g_haveOldRecording = false;
 
 static void RestoreVoiceRecorder() {
     Il2CppObject *rec = g_soundRecorder.get();
-    if (Alive(rec)) {
-        if (G.recorderSetAudioClip.IsValid()) G.recorderSetAudioClip[rec](g_oldRecorderClip.get());
-        if (G.recorderSetLoopAudioClip.IsValid()) G.recorderSetLoopAudioClip[rec](g_oldLoop);
-        if (G.recorderSetSourceType.IsValid()) G.recorderSetSourceType[rec](g_oldSourceType);
-        if (g_haveOldVoiceDetection && G.recorderSetVoiceDetection.IsValid()) G.recorderSetVoiceDetection[rec](g_oldVoiceDetection);
-        if (g_haveOldRecording && G.recorderSetRecording.IsValid()) G.recorderSetRecording[rec](g_oldRecording);
-        if (G.recorderRestart.IsValid()) G.recorderRestart[rec]();
+    // Always release our references, even if a game/Photon call throws during restore.
+    try {
+        if (Alive(rec)) {
+            if (G.recorderSetAudioClip.IsValid()) G.recorderSetAudioClip[rec](g_oldRecorderClip.get());
+            if (G.recorderSetLoopAudioClip.IsValid()) G.recorderSetLoopAudioClip[rec](g_oldLoop);
+            if (G.recorderSetSourceType.IsValid()) G.recorderSetSourceType[rec](g_oldSourceType);
+            if (g_haveOldVoiceDetection && G.recorderSetVoiceDetection.IsValid()) G.recorderSetVoiceDetection[rec](g_oldVoiceDetection);
+            if (g_haveOldRecording && G.recorderSetRecording.IsValid()) G.recorderSetRecording[rec](g_oldRecording);
+            if (G.recorderRestart.IsValid()) G.recorderRestart[rec]();
+        }
+    } catch (...) {
+        ym::log("dark-matter: exception while restoring Photon recorder");
     }
     g_soundRecorder.clear(); g_oldRecorderClip.clear();
     g_soundRemote = false;
+    g_haveOldVoiceDetection = g_haveOldRecording = false;
 }
 static void StopSound() {
     if (g_soundRemote) RestoreVoiceRecorder();
-    if (Alive(g_soundSource.get()) && G.audioSourceStop.IsValid()) G.audioSourceStop[g_soundSource.get()]();
-    if (Alive(g_soundSource.get()) && G.audioSourceSetClip.IsValid()) G.audioSourceSetClip[g_soundSource.get()](nullptr);
+    try {
+        if (Alive(g_soundSource.get()) && G.audioSourceStop.IsValid()) G.audioSourceStop[g_soundSource.get()]();
+        if (Alive(g_soundSource.get()) && G.audioSourceSetClip.IsValid()) G.audioSourceSetClip[g_soundSource.get()](nullptr);
+    } catch (...) { ym::log("dark-matter: local sound monitor cleanup failed"); }
     Kill(g_soundClip);
     g_soundActive = false;
     g_soundEnd = 0;
@@ -1932,7 +1941,6 @@ static bool BeginVoicePlayback(Il2CppObject *clip) {
         if (!Alive(rec)) continue;
         if (G.recorderGetTransmitEnabled.IsValid() && !G.recorderGetTransmitEnabled[rec]()) continue;
         if (G.recorderGetRecording.IsValid() && !G.recorderGetRecording[rec]()) continue;
-        if (G.recorderGetTransmitting.IsValid() && !G.recorderGetTransmitting[rec]()) continue;
         g_oldSourceType = G.recorderGetSourceType[rec]();
         g_oldRecorderClip.set(G.recorderGetAudioClip.IsValid() ? G.recorderGetAudioClip[rec]() : nullptr);
         g_oldLoop = G.recorderGetLoopAudioClip.IsValid() ? G.recorderGetLoopAudioClip[rec]() : false;
@@ -1958,18 +1966,14 @@ static bool BeginVoicePlayback(Il2CppObject *clip) {
     }
     return false;
 }
-static bool FeedSoundChunk() {
-    if (!Alive(g_soundClip.get()) || g_soundFramesQueued >= g_soundFramesTotal ||
-        !g_soundChannels || !g_soundSampleRate || !G.arrayNew || !G.audioClipSetData.IsValid()) return false;
-    size_t frames = std::min(kSoundChunkFrames, g_soundFramesTotal - g_soundFramesQueued);
-    size_t samples = frames * (size_t)g_soundChannels;
-    size_t offset = g_soundFramesQueued * (size_t)g_soundChannels;
-    Il2CppObject *managed = (Il2CppObject *)G.arrayNew(Class("System", "Single").GetClass(), (uintptr_t)samples);
+static bool FillSoundClip(Il2CppObject *clip, const std::vector<float> &pcm) {
+    if (!Alive(clip) || pcm.empty() || !G.arrayNew || !G.audioClipSetData.IsValid()) return false;
+    Il2CppObject *managed = (Il2CppObject *)G.arrayNew(
+        Class("System", "Single").GetClass(), (uintptr_t)pcm.size());
     if (!managed) return false;
-    memcpy((uint8_t *)managed + 0x20, g_soundPcm.data() + offset, samples * sizeof(float));
-    if (!G.audioClipSetData[g_soundClip.get()](managed, (int)offset)) return false;
-    g_soundFramesQueued += frames;
-    return true;
+    memcpy((uint8_t *)managed + 0x20, pcm.data(), pcm.size() * sizeof(float));
+    // Populate the entire non-streaming AudioClip before Photon starts reading it.
+    return G.audioClipSetData[clip](managed, 0);
 }
 static void PlaySound() {
     if (g_soundActive || g_time < g_nextSoundPlay) { Notify("Soundboard is busy"); return; }
@@ -1991,49 +1995,54 @@ static void PlaySound() {
     Il2CppObject *clip = G.audioClipCreate(CreateMonoString("DARK MATTER Sound"), (int)frames, channels, sampleRate, false);
     if (!clip) { Notify("Could not create audio clip"); return; }
     g_soundClip.set(clip);
-    g_soundPcm = std::move(pcm);
-    g_soundFramesTotal = frames;
-    g_soundFramesQueued = 0;
-    g_soundChannels = channels;
-    g_soundSampleRate = sampleRate;
-
-    // Pre-fill only half a second. The rest is copied in small per-frame chunks.
-    size_t prebuffer = std::min(g_soundFramesTotal, (size_t)sampleRate / 2);
-    while (g_soundFramesQueued < prebuffer)
-        if (!FeedSoundChunk()) { StopSound(); Notify("Could not buffer sound"); return; }
-
-    // Soundboard buttons are microphone-only: never play a clip locally as a fallback.
-    bool remote = BeginVoicePlayback(clip);
-    if (!remote) {
+    if (!FillSoundClip(clip, pcm)) {
         StopSound();
-        Notify("Microphone not ready; enable voice chat and try again");
+        Notify("Could not fill audio clip");
         return;
     }
+
+    // Switch the active Photon recorder to this complete clip. AudioClip is a supported
+    // Photon Voice source and is transmitted to other players in the current voice room.
+    if (!BeginVoicePlayback(clip)) {
+        StopSound();
+        Notify("Voice chat not ready; join voice and enable your mic");
+        return;
+    }
+
+    // Also monitor the same clip locally so the person pressing the button can hear it.
+    try {
+        if (!Alive(g_soundSource.get())) {
+            Il2CppObject *go = Class("UnityEngine", "GameObject").CreateNewObjectParameters(CreateMonoString("DARK MATTER Sound Monitor"));
+            Il2CppObject *source = go ? G.goAddComponent[go](G.tAudioSource) : nullptr;
+            if (source) {
+                g_soundSource.set(source);
+                if (Alive(g_head.get())) G.trSetParent[Tr(go)](Tr(g_head.get()), false);
+                G.audioSourceSetSpatialBlend[source](0.0f);
+            } else if (go) G.destroy(go);
+        }
+        if (Alive(g_soundSource.get())) {
+            G.audioSourceSetVolume[g_soundSource.get()](g_soundVolume);
+            G.audioSourceSetClip[g_soundSource.get()](clip);
+            G.audioSourcePlay[g_soundSource.get()]();
+        }
+    } catch (...) {
+        ym::log("dark-matter: local monitor unavailable; room stream continues");
+    }
+
     g_soundActive = true;
     g_soundStarted = g_time;
     double duration = (double)frames / (double)sampleRate;
     g_soundEnd = g_time + duration + 0.2;
     g_nextSoundPlay = g_time + fmax(1.0, duration);
     size_t slash = path.find_last_of('/');
-    Notify(remote ? "Streaming to room: %s" : "Playing locally: %s",
+    Notify("Streaming to room + local monitor: %s",
            slash == std::string::npos ? path.c_str() : path.c_str() + slash + 1);
 }
 static void SoundboardTick() {
     if (!g_soundActive) return;
-    try {
-        for (int i = 0; i < 2 && g_soundFramesQueued < g_soundFramesTotal; ++i) {
-            if (!FeedSoundChunk()) { StopSound(); Notify("Sound stream buffer failed; microphone restored"); return; }
-        }
-    } catch (...) {
-        try { StopSound(); } catch (...) {}
-        Notify("Sound stream error; microphone restored");
-        ym::log("dark-matter: soundboard stream exception");
-        return;
-    }
-    if (g_time >= g_soundEnd) { StopSound(); Notify("Sound finished; microphone restored"); return; }
-    if (g_soundRemote && Alive(g_soundRecorder.get()) && G.recorderGetTransmitting.IsValid() &&
-        !G.recorderGetTransmitting[g_soundRecorder.get()]() && g_time >= g_soundStarted + 1.5 && g_time + 0.1 < g_soundEnd) {
-        StopSound(); Notify("Voice stream stopped; microphone restored");
+    if (g_time >= g_soundEnd) {
+        StopSound();
+        Notify("Sound finished; microphone restored");
     }
 }
 
