@@ -1969,22 +1969,37 @@ static void RebuildSoundItems() {
     }
 }
 static void ScanSounds() {
-    std::string base = PersistentPath();
-    if (base.empty()) { Notify("Soundboard path unavailable"); return; }
-    g_soundDirectory = base + "/sounds";
-    mkdir(g_soundDirectory.c_str(), 0775);
-    g_soundFiles.clear();
-    DIR *d = opendir(g_soundDirectory.c_str());
-    if (!d) { Notify("Could not open sounds folder"); return; }
-    while (dirent *e = readdir(d)) {
-        std::string n = e->d_name;
-        if (n.size() < 5) continue;
-        std::string ext = n.substr(n.size() - 4);
-        for (char &c : ext) c = (char)tolower((unsigned char)c);
-        if (ext == ".wav" || ext == ".mp3") g_soundFiles.push_back(g_soundDirectory + "/" + n);
+    std::vector<std::string> directories;
+    const char *mods = ym::api()->modsDir;
+    if (mods && mods[0]) {
+        std::string root = mods;
+        directories.push_back(root);             // also accept files placed directly in mods/
+        directories.push_back(root + "/sounds");
     }
-    closedir(d);
+    std::string persistent = PersistentPath();
+    if (!persistent.empty()) directories.push_back(persistent + "/sounds");
+    if (directories.empty()) { Notify("Soundboard path unavailable"); return; }
+
+    g_soundFiles.clear();
+    bool opened = false;
+    for (const std::string &dir : directories) {
+        if (dir.size() >= 7 && dir.compare(dir.size() - 7, 7, "/sounds") == 0) mkdir(dir.c_str(), 0775);
+        DIR *d = opendir(dir.c_str());
+        if (!d) continue;
+        opened = true;
+        while (dirent *e = readdir(d)) {
+            std::string n = e->d_name;
+            if (n.size() < 5) continue;
+            std::string ext = n.substr(n.size() - 4);
+            for (char &c : ext) c = (char)tolower((unsigned char)c);
+            if (ext == ".wav" || ext == ".mp3") g_soundFiles.push_back(dir + "/" + n);
+        }
+        closedir(d);
+    }
+    if (!opened) { Notify("Could not open mods or sounds folders"); return; }
     std::sort(g_soundFiles.begin(), g_soundFiles.end());
+    g_soundFiles.erase(std::unique(g_soundFiles.begin(), g_soundFiles.end()), g_soundFiles.end());
+    g_soundDirectory = directories.front();
     g_soundIndex = 0;
     RebuildSoundItems();
     Notify("Found %d WAV/MP3 files", (int)g_soundFiles.size());
@@ -2044,6 +2059,7 @@ static void PlaySound() {
     g_soundDecodeState.store(1);
     Notify("Preparing sound...");
     std::thread([path, job]() {
+      try {
         int channels = 0, rate = 0;
         size_t frames = 0;
         std::vector<float> pcm;
@@ -2096,6 +2112,9 @@ static void PlaySound() {
             g_soundDecodedFrames = frames;
         }
         g_soundDecodeState.store(2);
+      } catch (...) {
+        if (g_soundGeneration.load() == job) g_soundDecodeState.store(3);
+      }
     }).detach();
 }
 
@@ -2104,7 +2123,7 @@ static void SoundLoadTick() {
     int state = g_soundDecodeState.load();
     if (state == 3) {
         g_soundDecodeState.store(0);
-        Notify("Could not decode sound. Check that it is a supported MP3 or PCM16 WAV file");
+        Notify("Could not decode sound. Check the format and available memory");
         return;
     }
     if (state == 2 && !Alive(g_soundClip.get())) {
