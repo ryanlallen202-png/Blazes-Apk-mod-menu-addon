@@ -75,3 +75,13 @@ No headset/runtime verification is implied by the host tests.
 Fix 4 incorrectly declared GC handles as `uint32_t`. The SDK's Unity 2023+/Unity 6 headers define `Il2CppGCHandle` as `void *`; returning or passing it as 32 bits can truncate it on arm64. Fix 5 uses that SDK type for storage and all three GC-handle functions. The host regression round-trips a handle above `UINT32_MAX`, including replacement and release. No SDK or loader crash protection has been changed.
 
 If the previous build crashes on entry, remove its `.so` from the headset's mods folder before launching again. Install only the new `dark-matter.so`, not all libraries from the artifact. Keep other mods removed temporarily when isolating a load crash. A successful Actions build confirms compilation, not on-device recovery; send the loader's final checkpoint lines if startup still fails.
+
+## Audio Invoke Guard 6: remaining playback crash investigation
+
+Fix 6 checks both the native entry point and AOT invoker before calling `il2cpp_runtime_invoke`, plus argument count and non-null instance for instance methods. The runtime's invoke implementation dereferences the invoker without a null check; metadata presence alone does not prove it is callable. An absent invoker now fails with a checkpoint message instead of entering that path. This is a concrete guard, not proof it caused the reported headset crash. Native crashes elsewhere still cannot be caught by C++ exceptions.
+
+Clip allocation and the first PCM upload happen in separate update frames. Additional stage markers distinguish GameObject allocation, AddComponent and AudioSource.Play. Managed playback errors now include the exception category in the checkpoint log.
+
+**Test Tone (Local)** plays a quiet 0.25-second 440 Hz tone through the same Unity clip/upload/AudioSource path, without reading files, invoking a decoder or changing voice chat. Normal filename buttons retain room-audio routing. To help isolate the remaining fault, report whether this local tone also crashes, whether file loading reaches 100%, and the final `dark-matter sound:` lines from `bnm_checkpoint.txt`. Do not repeatedly relaunch a build that crashes on entry; remove its `.so` to recover first.
+
+The build and host tests cannot establish on-device playback correctness. No headset result has been collected for this revision.

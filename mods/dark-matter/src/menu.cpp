@@ -37,7 +37,7 @@ using namespace BNM::Structures::Unity;
 using BNM::IL2CPP::Il2CppObject;
 
 YEEPS_MOD("DARK MATTER")
-#define DM_VERSION "Unity 6 Handle Fix 5"
+#define DM_VERSION "Audio Invoke Guard 6"
 
 // ---- small helpers ---------------------------------------------------------
 
@@ -92,6 +92,18 @@ template<class Result, class... Args>
 static Result AudioCall(const MethodBase &method, Il2CppObject *instance, Args... args) {
     if (!p_audioInvoke || !p_audioUnbox || !method.IsValid())
         throw std::runtime_error("audio runtime API or method unavailable");
+    const auto *info = method.GetInfo();
+    // IL2CPP's Runtime::InvokeWithThrow dereferences invoker_method unconditionally.
+    // IsValid() only checks for metadata; stripped AOT invocation can still be absent.
+    if (!info->methodPointer || !info->invoker_method) {
+        ym::log("dark-matter sound: unavailable AOT invoker: %s", info->name);
+        throw std::runtime_error("audio AOT invoker unavailable");
+    }
+    if (info->parameters_count != sizeof...(Args) ||
+        ((info->flags & 0x0010) == 0 && !instance)) {
+        ym::log("dark-matter sound: invalid invocation signature: %s", info->name);
+        throw std::runtime_error("audio invocation signature mismatch");
+    }
     void *parameters[] = {AudioArgument(args)..., nullptr};
     BNM::IL2CPP::Il2CppException *exception = nullptr;
     Il2CppObject *result = p_audioInvoke(method.GetInfo(), instance,
@@ -491,6 +503,7 @@ static Ref g_soundObject, g_soundSource, g_soundClip;
 static std::vector<std::string> g_soundFiles;
 static size_t g_soundIndex = 0;
 static std::string g_soundPlayingPath;
+static bool g_soundRoomPlayback = true;
 static float g_soundVolume = 0.75f;
 static std::vector<float> g_soundPcm;
 static size_t g_soundLoadOffset = 0;
@@ -542,6 +555,7 @@ static void ArmDupe9x3();
 static bool LeftHandItem();
 static void ScanSounds();
 static void PlaySound();
+static void PlayTestTone();
 static void StopSound();
 static void SoundVolumeUp();
 static void SoundVolumeDown();
@@ -634,6 +648,7 @@ static Item g_items[] = {
     {SOUNDBOARD, "MP3 Files", OPEN, SOUND_MP3},
     {SOUNDBOARD, "WAV Files", OPEN, SOUND_WAV},
     {SOUNDBOARD, "Stop Sound", ACTION, MAIN, nullptr, StopSound},
+    {SOUNDBOARD, "Test Tone (Local)", ACTION, MAIN, nullptr, PlayTestTone},
     {SOUNDBOARD, "Volume Up", ACTION, MAIN, nullptr, SoundVolumeUp},
     {SOUNDBOARD, "Volume Down", ACTION, MAIN, nullptr, SoundVolumeDown},
     {SOUND_MP3, "Back to Soundboard", OPEN, SOUNDBOARD},
@@ -2119,8 +2134,11 @@ static void PlaySound() {
     }
     if (g_soundIndex >= g_soundFiles.size()) g_soundIndex = 0;
     const std::string path = g_soundFiles[g_soundIndex];
+    ym::log("dark-matter sound: play requested index=%zu", g_soundIndex);
     g_soundPlayingPath = path;
+    g_soundRoomPlayback = true;
     StopSound();
+    ym::log("dark-matter sound: previous playback stopped; starting decoder");
     const unsigned job = g_soundGeneration.load();
     g_soundDecodeState.store(1);
     Notify("Preparing sound...");
@@ -2210,6 +2228,33 @@ static void PlaySound() {
     }
 }
 
+// Runs through the same clip/upload/source path without files, codecs or voice chat.
+static void PlayTestTone() {
+    if (g_time < g_soundNextAllowed || g_soundWorkerActive.load() || g_soundDecodeState.load() != 0) {
+        Notify("Wait until the current sound finishes");
+        return;
+    }
+    if (!p_audioInvoke || !p_audioUnbox || !G.arrayNew || !G.floatClass ||
+        !G.audioClipCreate.IsValid() || !G.audioClipSetData.IsValid()) {
+        Notify("Unity audio methods unavailable");
+        return;
+    }
+    StopSound();
+    constexpr int rate = 48000, frames = rate / 4;
+    g_soundPcm.resize(frames);
+    for (int i = 0; i < frames; ++i) {
+        float envelope = fminf(1.0f, fminf(i / 240.0f, (frames - 1 - i) / 240.0f));
+        g_soundPcm[i] = 0.08f * envelope * sinf(6.2831853f * 440.0f * i / rate);
+    }
+    g_soundPlayingPath = "Built-in test tone";
+    g_soundRoomPlayback = false;
+    g_soundDecodedChannels = 1;
+    g_soundDecodedRate = rate;
+    g_soundDecodedFrames = frames;
+    g_soundDecodeState.store(2);
+    ym::log("dark-matter sound: local test tone queued (no file, codec or voice)");
+}
+
 static void SoundLoadTick() {
     if (g_voiceOverrideActive && g_time >= g_voiceRestoreAt) RestoreVoiceInput();
     int state = g_soundDecodeState.load();
@@ -2243,6 +2288,7 @@ static void SoundLoadTick() {
         g_soundDuration = rate > 0 ? (double)frames / (double)rate : 0.0;
         g_soundLoadOffset = 0;
         g_soundLastProgress = -1;
+        return; // keep native clip allocation and first upload in separate frames
     }
     if (g_soundPcm.empty() || !Alive(g_soundClip.get())) return;
     const size_t framesLeft = (size_t)g_soundLoadFrames - g_soundLoadOffset;
@@ -2275,16 +2321,18 @@ static void SoundLoadTick() {
         g_soundDecodeState.store(0);
         const double duration = g_soundDuration;
         g_soundNextAllowed = g_time + (duration < 1.0 ? 1.0 : duration);
-        ym::log("dark-matter sound: clip upload complete; starting local playback");
+        ym::log("dark-matter sound: clip upload complete; creating local audio source");
         bool localStarted = false;
         if (!Alive(g_soundSource.get()) && G.soundGameObjectClass.IsValid() && G.soundGameObjectCtor.IsValid() &&
             G.goAddComponent.IsValid() && G.asSetClip.IsValid() && G.asPlay.IsValid()) {
             Kill(g_soundObject);
+            ym::log("dark-matter sound: allocating soundboard GameObject");
             Il2CppObject *go = G.soundGameObjectClass.CreateNewInstance();
             if (go) {
                 g_soundObject.set(go); // root the object before calling a managed constructor
                 AudioCall<void>(G.soundGameObjectCtor, go, CreateMonoString("DARK MATTER Soundboard"));
             }
+            ym::log("dark-matter sound: adding AudioSource component");
             Il2CppObject *sourceComp = go ? AudioCall<Il2CppObject *>(G.goAddComponent, go, G.tAudioSource) : nullptr;
             if (sourceComp) {
                 g_soundObject.set(go);
@@ -2297,12 +2345,13 @@ static void SoundLoadTick() {
         if (Alive(g_soundSource.get()) && G.asSetClip.IsValid() && G.asPlay.IsValid()) {
             if (G.asSetVolume.IsValid()) AudioCall<void>(G.asSetVolume, g_soundSource.get(), g_soundVolume);
             AudioCall<void>(G.asSetClip, g_soundSource.get(), g_soundClip.get());
+            ym::log("dark-matter sound: starting AudioSource.Play");
             AudioCall<void>(G.asPlay, g_soundSource.get());
             localStarted = true;
         }
         ym::log("dark-matter sound: local=%d; routing voice input", localStarted);
         bool voiceSent = false;
-        try { voiceSent = StartVoicePlayback(g_soundClip.get(), duration); }
+        try { if (g_soundRoomPlayback) voiceSent = StartVoicePlayback(g_soundClip.get(), duration); }
         catch (...) {
             RestoreVoiceInput();
             ym::log("dark-matter sound: voice routing failed; keeping local preview");
@@ -2312,7 +2361,7 @@ static void SoundLoadTick() {
         size_t slash = p.find_last_of('/');
         const char *name = slash == std::string::npos ? p.c_str() : p.c_str() + slash + 1;
         if (voiceSent) Notify("Playing to room: %s", name);
-        else if (localStarted) Notify("Local only (voice chat unavailable): %s", name);
+        else if (localStarted) Notify(g_soundRoomPlayback ? "Local only (voice chat unavailable): %s" : "Playing locally: %s", name);
         else Notify("Could not start audio playback");
     }
 }
@@ -3483,7 +3532,16 @@ static void OnUpdate(float dt) {
     try { SpawnOnHandTick(in); ItemQueueTick(); }
     catch (...) { g_itemQueue.clear(); ym::log("dark-matter: item code error"); }
     try { SoundLoadTick(); }
-    catch (...) { StopSound(); ym::log("dark-matter: sound loading error"); }
+    catch (const std::exception &error) {
+        StopSound();
+        ym::log("dark-matter sound: playback failed: %s", error.what());
+        Notify("Audio error; check bnm_checkpoint.txt");
+    }
+    catch (...) {
+        StopSound();
+        ym::log("dark-matter sound: playback failed (unknown exception)");
+        Notify("Audio error; check bnm_checkpoint.txt");
+    }
     try { WeatherTick(dt); }
     catch (...) { WeatherOff(); g_wx = -1; for (bool &b : g_wxSel) b = false; ym::log("dark-matter: effects error, turned off"); }
     try { TodTick(); }

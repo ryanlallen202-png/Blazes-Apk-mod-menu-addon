@@ -52,7 +52,13 @@ class SoundboardTests(unittest.TestCase):
 #include <type_traits>
 #include <stdexcept>
 namespace BNM::IL2CPP {
-struct MethodInfo { const char *name; };
+struct MethodInfo {
+    const char *name;
+    void *methodPointer = (void *)1;
+    void *invoker_method = (void *)1;
+    unsigned parameters_count = 0;
+    unsigned flags = 0;
+};
 struct Il2CppException {};
 }
 struct Il2CppObject { bool value; };
@@ -87,13 +93,34 @@ int main() {
     MethodBase method;
     p_audioInvoke = Invoke;
     p_audioUnbox = Unbox;
+    method.info.parameters_count = 5;
     assert(AudioCall<bool>(method, &instance, &reference, 4096, 0.75f, false, (Il2CppObject *)nullptr));
+    method.info.parameters_count = 0;
     mode = 1;
     assert(AudioCall<Il2CppObject *>(method, &instance) == &boxed);
     AudioCall<void>(method, &instance);
     mode = 2;
     bool caught = false;
     try { AudioCall<void>(method, &instance); } catch (const std::runtime_error &) { caught = true; }
+    assert(caught);
+    mode = 1;
+    method.info.invoker_method = nullptr;
+    caught = false;
+    try { AudioCall<void>(method, &instance); } catch (const std::runtime_error &) { caught = true; }
+    assert(caught);
+    method.info.invoker_method = (void *)1;
+    method.info.methodPointer = nullptr;
+    caught = false;
+    try { AudioCall<void>(method, &instance); } catch (const std::runtime_error &) { caught = true; }
+    assert(caught);
+    method.info.methodPointer = (void *)1;
+    method.info.parameters_count = 1;
+    caught = false;
+    try { AudioCall<void>(method, &instance); } catch (const std::runtime_error &) { caught = true; }
+    assert(caught);
+    method.info.parameters_count = 0;
+    caught = false;
+    try { AudioCall<void>(method, nullptr); } catch (const std::runtime_error &) { caught = true; }
     assert(caught);
     p_audioInvoke = nullptr;
     caught = false;
