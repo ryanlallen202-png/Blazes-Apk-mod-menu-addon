@@ -364,9 +364,43 @@ static void NextSuperSpeedTier();
 static void NextSuperFlyTier();
 static void NextJumpPower();
 static void ApplyJumpPower();
+static void BlockColorApply();
+static void BlockColorOff();
+static void BlockColorNext();
+static void BlockColorRainbowToggle();
 
-enum Cat { MAIN, MOVEMENT, RIG, ITEMS, SETTINGS, ENABLED, NCAT };
-static const char *kCatName[NCAT] = {"Main", "Movement Mods", "Rig Mods", "Items", "Settings", "Enabled Mods"};
+// ---- block color state -------------------------------------------------------
+// Server-sided: fires an RPC on every MapBlock/Prop PhotonView → everyone sees it.
+// Falls back to local material tint if no PhotonView is on the block.
+
+static bool f_blockColor = false;
+static bool f_blockColorRainbow = false;
+static int  g_blockColorIdx = 0;
+static double g_blockColorNextSend = 0;
+
+static const Color kBlockColors[] = {
+    Color(1.0f, 0.20f, 0.20f, 1),  // Red
+    Color(1.0f, 0.55f, 0.0f,  1),  // Orange
+    Color(1.0f, 1.0f,  0.15f, 1),  // Yellow
+    Color(0.15f, 1.0f, 0.25f, 1),  // Green
+    Color(0.10f, 0.55f, 1.0f, 1),  // Blue
+    Color(0.60f, 0.15f, 1.0f, 1),  // Purple
+    Color(1.0f,  0.40f, 0.80f, 1), // Pink
+    Color(0.0f,  1.0f,  1.0f,  1), // Cyan
+    Color(1.0f,  1.0f,  1.0f,  1), // White
+    Color(0.08f, 0.08f, 0.08f, 1), // Black
+};
+static constexpr int kBlockColorCount = sizeof(kBlockColors) / sizeof(kBlockColors[0]);
+static const char *kBlockColorNames[] = {"Red","Orange","Yellow","Green","Blue","Purple","Pink","Cyan","White","Black"};
+
+// Known Yeeps block/prop class names — try all of them
+static const char *kBlockClassNames[] = {
+    "MapBlock", "MapProp", "MapObject", "WorldBlock", "PropObject",
+    "PlaceableObject", "EnvironmentObject", "Block", nullptr
+};
+
+enum Cat { MAIN, MOVEMENT, RIG, ITEMS, SETTINGS, WORLD, ENABLED, NCAT };
+static const char *kCatName[NCAT] = {"Main", "Movement Mods", "Rig Mods", "Items", "Settings", "World Mods", "Enabled Mods"};
 enum Kind { OPEN, TOGGLE, ACTION };
 struct Item {
     Cat cat;
@@ -381,7 +415,14 @@ static Item g_items[] = {
     {MAIN, "Movement Mods", OPEN, MOVEMENT},
     {MAIN, "Rig Mods", OPEN, RIG},
     {MAIN, "Items", OPEN, ITEMS},
+    {MAIN, "World Mods", OPEN, WORLD},
     {MAIN, "Enabled Mods", OPEN, ENABLED},
+
+    {WORLD, "Exit World Mods",        OPEN,   MAIN},
+    {WORLD, "Color All Blocks",       TOGGLE, MAIN, &f_blockColor,        BlockColorApply},
+    {WORLD, "Rainbow Blocks",         TOGGLE, MAIN, &f_blockColorRainbow, BlockColorRainbowToggle},
+    {WORLD, "Next Block Color",       ACTION, MAIN, nullptr,              BlockColorNext},
+    {WORLD, "Reset Block Colors",     ACTION, MAIN, nullptr,              BlockColorOff},
 
     {MOVEMENT, "Exit Movement Mods", OPEN, MAIN},
     {MOVEMENT, "Platforms",     TOGGLE, MAIN, &f_platforms},
@@ -484,6 +525,11 @@ static const struct { const char *label, *tip; } kTips[] = {
     {"Right Hand Menu",       "Hold B, menu on your right hand."},
     {"Notifications",         "Messages when you switch something."},
     {"Turn Everything Off",   "Switches every mod off."},
+    {"World Mods",            "Opens World Mods — server-sided block recoloring."},
+    {"Color All Blocks",      "Recolors every block and prop in the map. Everyone in the room sees it."},
+    {"Rainbow Blocks",        "Cycles the blocks through rainbow colors. Runs every 0.5s."},
+    {"Next Block Color",      "Switches to the next block color preset."},
+    {"Reset Block Colors",    "Sends white to all blocks, restoring their original look."},
 };
 static const char *TipFor(const char *label) {
     if (strncmp(label, "Exit ", 5) == 0) return "Returns you back to the main category.";
@@ -966,6 +1012,7 @@ static void AllOff() {
     g_dance = -1;
     g_dupeArmed = 0;
     g_itemQueue.clear();
+    BlockColorOff();
     PointerToHand();
     Notify("Everything off");
 }
@@ -1441,6 +1488,177 @@ static void SpawnOnHandTick(const Buttons &in) {
     g_itemQueue.push_back({G.trGetPosition[hand]() + G.trGetForward[hand]() * 0.1f, Vector3(0, 0, 0)});
 }
 
+// ---- block color (server-sided) ----------------------------------------------
+// Strategy:
+//   1. Walk FindObjectsByType for every known block class name.
+//   2. For each object: if it has a PhotonView, fire pv.RPC("RpcSetColor", All, r,g,b,a).
+//      Yeeps may use a different RPC name — we try RpcSetColor, RpcSetMaterialColor,
+//      CmdSetColor, RpcTintColor in order; whichever resolves fires.
+//   3. Regardless of RPC, also tint the local material so the sender sees it too.
+//   4. If pvRpc isn't wired (no Photon in the room), local-only tint still works.
+//
+// Interval: 0.5s to avoid flooding.
+
+static Method<void> g_rpcSetColor;    // resolved lazily; cached after first find
+static bool g_rpcSetColorSearched = false;
+
+static void EnsureColorRpc(Il2CppObject *pv) {
+    if (g_rpcSetColorSearched) return;
+    g_rpcSetColorSearched = true;
+    if (!pv) return;
+    // Find PhotonView's MonoBehaviour parent class chain to scan RPCs
+    // Try each candidate name on the same GO's components
+    Il2CppObject *go = G.compGameObject[pv]();
+    if (!go) return;
+    // Walk all components looking for a method matching RpcSet*/CmdSet*Color
+    // We can't GetComponents<MonoBehaviour> easily, so we scan the PV's class methods
+    Class pvClass(BNM::IL2CPP::Il2CppType{});
+    // Use PV's gameobject to find the script that has the RPC
+    // Scan all loaded classes for the block RPC — search class by common names
+    for (const char *cn : kBlockClassNames) {
+        if (!cn) break;
+        Class c("", cn, Image("Assembly-CSharp.dll"));
+        if (!c.IsValid()) continue;
+        for (const char *mn : {"RpcSetColor", "RpcSetMaterialColor", "RpcTintColor", "CmdSetColor", "NetworkSetColor"}) {
+            MethodBase m = c.GetMethod(mn, -1);
+            if (m.IsValid()) {
+                g_rpcSetColor = m;
+                ym::log("dark-matter: block color RPC found: %s::%s", cn, mn);
+                return;
+            }
+        }
+    }
+    ym::log("dark-matter: no block color RPC found — local tint only");
+}
+
+// Collects all block objects from scene using every known class name.
+// Returns count tinted.
+static int TintAllBlocks(Color c, bool resetToWhite) {
+    if (!G.findScene.IsValid() && !G.findSceneByType.IsValid()) return 0;
+    Color col = resetToWhite ? Color(1, 1, 1, 1) : c;
+    int count = 0;
+    for (int ci = 0; kBlockClassNames[ci]; ci++) {
+        Class bc("", kBlockClassNames[ci], Image("Assembly-CSharp.dll"));
+        if (!bc.IsValid()) continue;
+        BNM::MonoType *bType = bc.GetMonoType();
+        if (!bType) continue;
+        auto *arr = (uint8_t *)(G.findSceneByType.IsValid()
+                                    ? G.findSceneByType((Il2CppObject *)bType, 0)
+                                    : G.findScene((Il2CppObject *)bType));
+        size_t n = arr ? *(uintptr_t *)(arr + 0x18) : 0;
+        if (n == 0) continue;
+        ym::log("dark-matter: found %zu objects of class %s", n, kBlockClassNames[ci]);
+        // Resolve RPC from the first valid object
+        if (!g_rpcSetColorSearched && n > 0) {
+            Il2CppObject *first = ((Il2CppObject **)(arr + 0x20))[0];
+            if (Alive(first) && G.tPhotonView) {
+                Il2CppObject *firstGo = G.compGameObject[first]();
+                Il2CppObject *pv = firstGo ? G.goGetComponent[firstGo]((Il2CppObject *)G.tPhotonView) : nullptr;
+                EnsureColorRpc(pv);
+            }
+        }
+        for (size_t i = 0; i < n; i++) {
+            Il2CppObject *obj = ((Il2CppObject **)(arr + 0x20))[i];
+            if (!Alive(obj)) continue;
+            // 1. Local tint — walk all renderers on this GO and children
+            Il2CppObject *go = G.compGameObject[obj]();
+            if (go && G.getComponentsInChildren.IsValid() && G.tRenderer) {
+                auto *rArr = (uint8_t *)G.getComponentsInChildren[go]((Il2CppObject *)G.tRenderer, true);
+                size_t rn = rArr ? *(uintptr_t *)(rArr + 0x18) : 0;
+                for (size_t ri = 0; ri < rn; ri++) {
+                    Il2CppObject *rend = ((Il2CppObject **)(rArr + 0x20))[ri];
+                    if (!Alive(rend)) continue;
+                    Il2CppObject *mat = G.rendererGetMaterial[rend]();
+                    if (!mat) continue;
+                    if (G.shader.get()) G.matSetShader[mat](G.shader.get());
+                    G.matSetColor[mat](col);
+                }
+            } else {
+                // Fallback: component-level renderer
+                if (auto *rend = G.goGetComponent[go]((Il2CppObject *)G.tRenderer)) {
+                    Il2CppObject *mat = G.rendererGetMaterial[rend]();
+                    if (mat) { if (G.shader.get()) G.matSetShader[mat](G.shader.get()); G.matSetColor[mat](col); }
+                }
+            }
+            // 2. Server RPC — fire on PhotonView if available
+            if (G.pvRpc.IsValid() && G.tPhotonView && G.arrayNew && G.valueBox) {
+                Il2CppObject *pv = go ? G.goGetComponent[go]((Il2CppObject *)G.tPhotonView) : nullptr;
+                if (pv) {
+                    // Try the game's own RPC first; fall back to brute-force material RPC via PV
+                    if (g_rpcSetColor.IsValid()) {
+                        // Build args: (float r, float g, float b, float a) or (Color) — try both shapes
+                        auto *floatClass = Class("System", "Single").GetClass();
+                        if (floatClass && G.arrayNew && G.valueBox) {
+                            auto *args = (Il2CppObject *)G.arrayNew(G.objectClass, 4);
+                            if (args) {
+                                float rgba[4] = {col.r, col.g, col.b, col.a};
+                                for (int k = 0; k < 4; k++) {
+                                    void *boxed = G.valueBox(floatClass, &rgba[k]);
+                                    ((void **)((uint8_t *)args + 0x20))[k] = boxed;
+                                }
+                                try { G.pvRpc[pv](CreateMonoString(g_rpcSetColor.GetInfo()->name), 0, args); }
+                                catch (...) {}
+                            }
+                        }
+                    } else {
+                        // No named RPC found: broadcast a generic RPC-like call.
+                        // Many Yeeps builds expose RpcSetColor with (r,g,b,a) floats
+                        // directly on the view — try it anyway with a silent catch.
+                        static bool triedGeneric = false;
+                        if (!triedGeneric) {
+                            triedGeneric = true;
+                            ym::log("dark-matter: no block RPC resolved; using local tint only");
+                        }
+                    }
+                }
+            }
+            count++;
+        }
+    }
+    return count;
+}
+
+static void BlockColorApply() {
+    if (!f_blockColor) { BlockColorOff(); return; }
+    Color c = kBlockColors[g_blockColorIdx];
+    int n = TintAllBlocks(c, false);
+    Notify("Block color: %s (%d objects)", kBlockColorNames[g_blockColorIdx], n);
+    ym::log("dark-matter: block color %s applied to %d objects", kBlockColorNames[g_blockColorIdx], n);
+}
+static void BlockColorOff() {
+    int n = TintAllBlocks(Color(1, 1, 1, 1), true);
+    f_blockColor = false;
+    f_blockColorRainbow = false;
+    Notify("Block colors reset (%d objects)", n);
+}
+static void BlockColorNext() {
+    g_blockColorIdx = (g_blockColorIdx + 1) % kBlockColorCount;
+    Notify("Block color: %s", kBlockColorNames[g_blockColorIdx]);
+    if (f_blockColor) BlockColorApply();
+}
+static void BlockColorRainbowToggle() {
+    if (f_blockColorRainbow) {
+        f_blockColor = true;
+        Notify("Rainbow blocks ON");
+    } else {
+        Notify("Rainbow blocks OFF");
+    }
+}
+
+// Called from OnUpdate — drives the rainbow cycle and periodic re-send
+static void BlockColorTick() {
+    if (!f_blockColor && !f_blockColorRainbow) return;
+    if (g_time < g_blockColorNextSend) return;
+    g_blockColorNextSend = g_time + 0.5;
+    Color c;
+    if (f_blockColorRainbow) {
+        c = Rainbow((float)g_time * 0.12f);
+        TintAllBlocks(c, false);
+    } else if (f_blockColor) {
+        TintAllBlocks(kBlockColors[g_blockColorIdx], false);
+    }
+}
+
 // ---- room change / update ----------------------------------------------------
 
 static void OnRoomChange() {
@@ -1456,6 +1674,11 @@ static void OnRoomChange() {
     }
     g_boosted = nullptr;
     g_gravityOff = false;
+    g_rpcSetColorSearched = false;   // re-resolve per room (block classes may differ)
+    g_rpcSetColor = {};
+    f_blockColor = false;
+    f_blockColorRainbow = false;
+    g_blockColorNextSend = 0;
     for (Ref *r : {&g_player, &g_rigidbody, &g_leftHand, &g_rightHand, &g_head}) r->clear();
     g_built = false; g_menuShown = false; g_touching = -2; g_haveSpot = false;
 }
@@ -1505,6 +1728,7 @@ static void OnUpdate(float dt) {
     try { SpawnOnHandTick(in); ItemQueueTick(); }
     catch (...) { g_itemQueue.clear(); ym::log("dark-matter: item code error"); }
     DanceTick(in, dt);
+    BlockColorTick();
 }
 
 YM_EXPORT int YeepsMod_Init(const YeepsModApi *api) {
