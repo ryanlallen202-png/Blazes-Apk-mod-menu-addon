@@ -1,6 +1,6 @@
 # Combined TypeScript port — Diddy Client
 
-**Output:** `diddy-client.so` (Android arm64), **Combined TS Port 12**.
+**Output:** `diddy-client.so` (Android arm64), **Verified Combined 13**.
 **Scope:** one native menu combining the supported features, not all supplied behavior. No Frida runtime, JavaScript engine, scrambled export table or raw TypeScript is loaded.
 
 The source menus are credited to @goldentrophy / @crimsoncauldron in their headers. The native foundation retains its existing credits. The original files are not committed; SHA-256 identities and every literal button disposition are in `combined-ports.json`.
@@ -27,7 +27,7 @@ Fly modes can conflict if multiple movement toggles are enabled; hover has prior
 
 Run `python3 tools/check_mod.py` and `python3 mods/dark-matter/tests/test_soundboard.py`. Install lameenc 1.9.0 in a virtualenv to include actual MP3 fixtures. Set `SOUNDBOARD_SANITIZERS=1` to compile host executables with ASan/UBSan. Tests include the actual extracted movement/restoration/selection code and the actual voice lifecycle/handoff code, plus full-menu syntax checking.
 
-Build via `ANDROID_NDK=/path/to/ndk-r27c ./build.sh`, or use the successful GitHub Actions run linked in delivery. The multi-mod Actions artifact also contains unrelated libraries: extract and install **only `diddy-client.so`**, not every `.so`. Remove the previous diddy-client/dark-matter duplicate, use CX File Explorer to place the file in `Android/data/com.TrassGames.Yeeps/files/mods/`, restart and verify the version.
+Build via `ANDROID_NDK=/path/to/ndk-r27c ./build.sh`, or use the successful GitHub Actions run linked in delivery. The multi-mod Actions artifact also contains unrelated libraries: extract and install **only `diddy-client.so`**, not every `.so`. Remove the previous diddy-client/dark-matter duplicate, use CX File Explorer to place the file in `Android/data/com.TrassGames.Yeeps/files/mods/`, restart and verify **Verified Combined 13**.
 
 Headset acceptance is still needed: toggle features Off and All Off, close/reopen the menu while frozen, switch rooms with roll enabled, check that tools only read on fresh presses, test missing components, and verify mic restoration and a consenting second listener. Host mocks and Android compilation are not headset testing.
 

@@ -1,4 +1,4 @@
-# Diddy Client — Combined TS Port 12
+# Diddy Client — Verified Combined 13
 
 One native Android arm64 library: **`diddy-client.so`**.
 
@@ -12,6 +12,10 @@ It does not load TypeScript, Frida or another script runtime.
 - [Custom MP3/WAV setup and soundboard history](sounds/README.md)
 - [Voice test coverage and headset acceptance checklist](tests/VERIFICATION.md)
 
+## Latest audit
+
+The user-linked main-branch run 41744295654 builds an older Dark Matter source, not this combined library. [Pinned-run findings and replacement test results](tests/RUN_41744295654_AUDIT.md) explain the mismatch and the 18-test verification pass.
+
 ## Installation
 
 Get the successful GitHub Actions artifact linked in the delivery message. Extract
@@ -21,7 +25,7 @@ CX File Explorer to put the new file in:
 
 `Android/data/com.TrassGames.Yeeps/files/mods/`
 
-Restart Yeeps and confirm **Combined TS Port 12**. Hold Y for the menu, or B when
+Restart Yeeps and confirm **Verified Combined 13**. Hold Y for the menu, or B when
 Right Hand Menu is enabled. Touch a button with the opposite index finger.
 
 Missing optional game methods produce an unavailable notice. Compilation and host

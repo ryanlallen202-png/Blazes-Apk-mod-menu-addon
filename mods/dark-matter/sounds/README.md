@@ -149,3 +149,7 @@ Host and Android builds cannot certify receiver audibility. A second-player head
 ## Combined TS Port 12
 
 This version keeps revision 11's soundboard in the single combined `diddy-client.so`. The supported native adaptations of the four uploaded TypeScript files and all exclusions are documented in [COMBINED_PORTS.md](../COMBINED_PORTS.md). It does not add another menu/runtime or change soundboard cooldown/mute behavior. Install only this client library, not old copies alongside it. Receiver audibility still requires an on-headset second-listener test.
+
+## Verified Combined 13
+
+Audited user-linked run 41744295654: it builds older `dark-matter.so`, and its root-level `Dark` edit is not a compiled source. This replacement keeps the existing stereo frame-offset, legacy voice, guarded invocation and staged-handoff fixes. Added actual upload tests for mono/stereo chunk boundaries and allocation/retention failures. A failed clip-retention regression now stops and attempts cleanup instead of allocating a new clip every update. All 18 host tests pass normally and under ASan/UBSan, including real MP3 fixtures. [Full audit and limitations](../tests/RUN_41744295654_AUDIT.md). No headset/receiver validation is claimed.

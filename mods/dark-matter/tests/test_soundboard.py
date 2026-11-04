@@ -17,6 +17,22 @@ NATIVE_FLAGS = (["-fsanitize=address,undefined", "-fno-omit-frame-pointer", "-g"
 
 
 class SoundboardTests(unittest.TestCase):
+    def test_actual_chunked_upload(self):
+        compiler = shutil.which("c++")
+        if not compiler:
+            self.skipTest("A host C++ compiler is required")
+        source = SOURCE.read_text()
+        begin = source.index("static void SoundLoadTick() {")
+        implementation = source[begin:source.index("// ---- effects:", begin)]
+        with tempfile.TemporaryDirectory() as directory:
+            tmp = pathlib.Path(directory)
+            (tmp / "sound_upload.inc").write_text(implementation)
+            exe = tmp / "sound_upload_test"
+            subprocess.run([compiler, "-std=c++20", *NATIVE_FLAGS, "-Wall", "-Wextra", "-Werror",
+                            "-I" + directory, str(pathlib.Path(__file__).with_name("sound_upload_test.cpp")),
+                            "-o", str(exe)], check=True)
+            subprocess.run([str(exe)], check=True)
+
     def test_combined_port_inventory(self):
         menu = SOURCE.read_text()
         ports = (SOURCE.parent / "CombinedPorts.hpp").read_text()

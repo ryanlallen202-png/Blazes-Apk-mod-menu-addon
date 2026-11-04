@@ -39,7 +39,7 @@ using namespace BNM::Structures::Unity;
 using BNM::IL2CPP::Il2CppObject;
 
 YEEPS_MOD("Diddy Client")
-#define DM_VERSION "Combined TS Port 12"
+#define DM_VERSION "Verified Combined 13"
 
 // ---- small helpers ---------------------------------------------------------
 
@@ -2549,6 +2549,14 @@ static void SoundLoadTick() {
             (int)frames, channels, rate, false);
         if (!clip) { StopSound(); Notify("Could not create audio clip"); return; }
         g_soundClip.set(clip);
+        if (!g_soundClip.get()) {
+            // Do not retry native clip creation every frame if GC retention fails.
+            try { if (AudioCallable(G.destroy)) AudioCall<void>(G.destroy, nullptr, clip); }
+            catch (...) { ym::log("dark-matter sound: unretained clip cleanup failed"); }
+            StopSound();
+            Notify("Could not retain audio clip");
+            return;
+        }
         g_soundLoadChannels = channels;
         g_soundLoadFrames = (int)frames;
         g_soundDuration = rate > 0 ? (double)frames / (double)rate : 0.0;
